@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Calendar } from 'lucide-react';
+import { Calendar, ShieldAlert } from 'lucide-react';
 import { OtterIcon } from '@/components/OtterIcon';
 import type { Profile } from '@/types/database';
 
@@ -13,8 +13,13 @@ interface AppHeaderProps {
 export function AppHeader({ currentProfile }: AppHeaderProps) {
   const pathname = usePathname();
 
-  // Hide header on login or change-password screens
-  if (pathname === '/login' || pathname === '/change-password') {
+  // Hide header on auth or pending approval screens
+  if (
+    pathname === '/login' ||
+    pathname === '/signup' ||
+    pathname === '/pending-approval' ||
+    pathname === '/change-password'
+  ) {
     return null;
   }
 
@@ -61,6 +66,17 @@ export function AppHeader({ currentProfile }: AppHeaderProps) {
             <Calendar className="w-3 h-3 text-sky-400" />
             <span>{meetingText}</span>
           </div>
+
+          {currentProfile?.is_super_admin && (
+            <Link
+              href="/admin/pending"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 hover:bg-amber-500/30 text-[11px] font-bold transition shadow-xs"
+              title="Super Admin: Review Pending Members"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Approvals</span>
+            </Link>
+          )}
 
           {currentProfile ? (
             <Link

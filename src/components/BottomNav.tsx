@@ -15,8 +15,13 @@ const NAV_ITEMS = [
 export function BottomNav() {
   const pathname = usePathname();
 
-  // Hide bottom nav on login or password change pages
-  if (pathname === '/login' || pathname === '/change-password') {
+  // Hide bottom nav on auth or pending approval screens
+  if (
+    pathname === '/login' ||
+    pathname === '/signup' ||
+    pathname === '/pending-approval' ||
+    pathname === '/change-password'
+  ) {
     return null;
   }
 

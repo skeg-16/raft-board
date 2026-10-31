@@ -20,6 +20,16 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
+  // Public auth API routes
+  if (pathname.startsWith('/api/auth')) {
+    return supabaseResponse;
+  }
+
+  const isLogin = pathname === '/login';
+  const isSignup = pathname === '/signup';
+  const isPendingApproval = pathname === '/pending-approval';
+  const isPublicAuthPage = isLogin || isSignup;
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -28,41 +38,48 @@ export async function updateSession(request: NextRequest) {
     supabaseAnonKey &&
     !supabaseUrl.includes('your-project-ref');
 
-  // Check for local demo session cookie if live Supabase is not configured
-  const demoUserCookie = request.cookies.get('raft_demo_user');
+  // Check for session cookie
+  const sessionCookie = request.cookies.get('raft_user_session');
 
+  // Local / Test Runtime Fallback
   if (!isConfigured) {
-    const isLogin = pathname === '/login';
-    const isChangePassword = pathname === '/change-password';
-    const isApiAuth = pathname.startsWith('/api/auth');
-
-    // API auth endpoints are always accessible
-    if (isApiAuth) {
-      return supabaseResponse;
-    }
-
-    // In local demo mode
-    if (!demoUserCookie && !isLogin) {
+    if (!sessionCookie && !isPublicAuthPage) {
       const url = request.nextUrl.clone();
       url.pathname = '/login';
       return NextResponse.redirect(url);
     }
 
-    if (demoUserCookie) {
+    if (sessionCookie) {
       try {
-        const user = JSON.parse(demoUserCookie.value);
-        if (user.must_change_password && !isChangePassword && pathname !== '/api/auth/change-password' && pathname !== '/api/auth/signout') {
+        const session = JSON.parse(sessionCookie.value) as {
+          id: string;
+          status: string;
+        };
+
+        if (session.status === 'pending') {
+          if (!isPendingApproval && pathname !== '/api/auth/signout') {
+            const url = request.nextUrl.clone();
+            url.pathname = '/pending-approval';
+            return NextResponse.redirect(url);
+          }
+          return supabaseResponse;
+        }
+
+        if (session.status === 'deactivated') {
           const url = request.nextUrl.clone();
-          url.pathname = '/change-password';
+          url.pathname = '/login';
+          url.searchParams.set('error', 'deactivated');
           return NextResponse.redirect(url);
         }
-        if (isLogin) {
-          const url = request.nextUrl.clone();
-          url.pathname = user.must_change_password ? '/change-password' : '/';
-          return NextResponse.redirect(url);
+
+        if (session.status === 'active') {
+          if (isPublicAuthPage || isPendingApproval) {
+            const url = request.nextUrl.clone();
+            url.pathname = '/';
+            return NextResponse.redirect(url);
+          }
         }
       } catch {
-        // Invalid cookie
         const url = request.nextUrl.clone();
         url.pathname = '/login';
         return NextResponse.redirect(url);
@@ -72,7 +89,7 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
-  // Live Supabase client configuration
+  // Live Supabase Client
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       getAll() {
@@ -92,51 +109,47 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  // IMPORTANT: Do not run code between createServerClient and
-  // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-  // issues with users being randomly logged out.
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isLogin = pathname === '/login';
-  const isChangePassword = pathname === '/change-password';
-  const isApiAuth = pathname.startsWith('/api/auth');
-
-  if (!user && !isLogin && !isApiAuth) {
-    // Unauthenticated users are redirected to login
+  if (!user && !isPublicAuthPage) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);
   }
 
   if (user) {
-    // Query user profile to check must_change_password status
     const { data: profile } = await supabase
       .from('profiles')
-      .select('must_change_password')
+      .select('status, is_super_admin')
       .eq('id', user.id)
       .single();
 
-    const mustChangePassword = profile?.must_change_password ?? false;
+    const status = profile?.status ?? 'pending';
 
-    if (mustChangePassword && !isChangePassword && !isApiAuth) {
-      // Force password change on first login
+    if (status === 'pending') {
+      if (!isPendingApproval && pathname !== '/api/auth/signout') {
+        const url = request.nextUrl.clone();
+        url.pathname = '/pending-approval';
+        return NextResponse.redirect(url);
+      }
+      return supabaseResponse;
+    }
+
+    if (status === 'deactivated') {
       const url = request.nextUrl.clone();
-      url.pathname = '/change-password';
+      url.pathname = '/login';
+      url.searchParams.set('error', 'deactivated');
       return NextResponse.redirect(url);
     }
 
-    if (!mustChangePassword && isChangePassword) {
-      const url = request.nextUrl.clone();
-      url.pathname = '/';
-      return NextResponse.redirect(url);
-    }
-
-    if (isLogin) {
-      const url = request.nextUrl.clone();
-      url.pathname = mustChangePassword ? '/change-password' : '/';
-      return NextResponse.redirect(url);
+    if (status === 'active') {
+      if (isPublicAuthPage || isPendingApproval) {
+        const url = request.nextUrl.clone();
+        url.pathname = '/';
+        return NextResponse.redirect(url);
+      }
     }
   }
 

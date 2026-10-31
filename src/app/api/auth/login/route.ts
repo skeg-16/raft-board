@@ -1,10 +1,27 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
-import { SEEDED_MEMBERS } from '@/lib/auth';
+import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
+import { getRuntimeUserStore } from '@/lib/auth';
+import type { Profile } from '@/types/database';
 
 export async function POST(request: Request) {
   try {
+    const ip = getClientIp(request);
+    const rateLimit = checkRateLimit(ip, 'login');
+
+    if (!rateLimit.success) {
+      return NextResponse.json(
+        {
+          error: `Too many login attempts. Please wait ${rateLimit.resetInSeconds} seconds before trying again.`,
+        },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rateLimit.resetInSeconds) },
+        }
+      );
+    }
+
     const { email, password } = await request.json();
 
     if (!email || !password) {
@@ -14,6 +31,7 @@ export async function POST(request: Request) {
       );
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const isConfigured =
       supabaseUrl &&
@@ -24,7 +42,7 @@ export async function POST(request: Request) {
     if (isConfigured) {
       const supabase = await createClient();
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         password,
       });
 
@@ -35,14 +53,22 @@ export async function POST(request: Request) {
         );
       }
 
-      // Fetch profile to check must_change_password
-      const { data: profile } = await supabase
+      // Query user profile
+      const { data: profileData } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', data.user.id)
         .single();
 
-      const memberProfile = profile as unknown as { must_change_password?: boolean } | null;
+      const profile = profileData as unknown as Profile | null;
+      const status = profile?.status ?? 'pending';
+
+      if (status === 'deactivated') {
+        return NextResponse.json(
+          { error: 'Your account has been deactivated. Please contact an administrator.' },
+          { status: 403 }
+        );
+      }
 
       return NextResponse.json({
         success: true,
@@ -51,58 +77,60 @@ export async function POST(request: Request) {
           email: data.user.email,
         },
         profile,
-        mustChangePassword: memberProfile?.must_change_password ?? false,
+        status,
       });
     }
 
-    // Local Demo / Test Mode (Instant testing for seeded members)
-    const normalizedEmail = email.trim().toLowerCase();
-    const seededMember = SEEDED_MEMBERS.find((m) => {
-      const slug = m.role_title.toLowerCase().replace(/[^a-z]/g, '');
-      return (
-        (m.role_type === 'executive' && normalizedEmail === `${m.role_title.toLowerCase().split(' ')[1] || 'exec'}@otter.systems`) ||
-        (m.role_title === 'Chief Operating Officer' && normalizedEmail === 'coo@otter.systems') ||
-        (m.role_title === 'Chief Technology Officer' && normalizedEmail === 'cto@otter.systems') ||
-        (m.role_title === 'Chief Marketing Officer' && normalizedEmail === 'cmo@otter.systems') ||
-        (m.role_title === 'Creatives Lead' && normalizedEmail === 'creatives@otter.systems') ||
-        (m.role_title === 'Backend Lead' && normalizedEmail === 'backend@otter.systems') ||
-        (m.role_title === 'Operations Lead' && normalizedEmail === 'operations@otter.systems')
-      );
-    });
+    // Local / Test Runtime Mode
+    const store = getRuntimeUserStore();
+    let foundProfile: (Profile & { email?: string; passwordHash?: string }) | undefined;
 
-    if (!seededMember) {
+    for (const p of store.values()) {
+      if ((p as any).email === normalizedEmail) {
+        foundProfile = p;
+        break;
+      }
+    }
+
+    if (!foundProfile || foundProfile.passwordHash !== password) {
       return NextResponse.json(
-        { error: 'Account not found. Access to Raft Board is invite-only.' },
+        { error: 'Invalid email or password.' },
         { status: 401 }
       );
     }
 
-    // Accept initial password "OtterPass2026!" or any updated password
-    if (password !== 'OtterPass2026!' && password.length < 8) {
+    if (foundProfile.status === 'deactivated') {
       return NextResponse.json(
-        { error: 'Invalid password. (Default seed password is OtterPass2026!)' },
-        { status: 401 }
+        { error: 'Your account has been deactivated. Please contact an administrator.' },
+        { status: 403 }
       );
     }
 
-    // Set demo cookie
     const cookieStore = await cookies();
-    cookieStore.set('raft_demo_user', JSON.stringify(seededMember), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-    });
+    cookieStore.set(
+      'raft_user_session',
+      JSON.stringify({
+        id: foundProfile.id,
+        email: normalizedEmail,
+        status: foundProfile.status,
+      }),
+      {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 7,
+      }
+    );
 
     return NextResponse.json({
       success: true,
       user: {
-        id: seededMember.id,
+        id: foundProfile.id,
         email: normalizedEmail,
       },
-      profile: seededMember,
-      mustChangePassword: seededMember.must_change_password,
+      profile: foundProfile,
+      status: foundProfile.status,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Login failed';

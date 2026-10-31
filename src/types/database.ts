@@ -1,10 +1,13 @@
 export type RoleType = 'executive' | 'lead';
+export type MemberStatus = 'pending' | 'active' | 'deactivated';
 
 export interface Profile {
   id: string;
   full_name: string;
-  role_title: string;
-  role_type: RoleType;
+  role_title: string | null;
+  role_type: RoleType | null;
+  requested_role_title: string | null;
+  status: MemberStatus;
   is_super_admin: boolean;
   is_treasurer: boolean;
   weekly_target_xp: number;
@@ -32,8 +35,10 @@ export type Database = {
         Insert: {
           id: string;
           full_name: string;
-          role_title: string;
-          role_type: RoleType;
+          role_title?: string | null;
+          role_type?: RoleType | null;
+          requested_role_title?: string | null;
+          status?: MemberStatus;
           is_super_admin?: boolean;
           is_treasurer?: boolean;
           weekly_target_xp?: number;
@@ -46,8 +51,10 @@ export type Database = {
         Update: {
           id?: string;
           full_name?: string;
-          role_title?: string;
-          role_type?: RoleType;
+          role_title?: string | null;
+          role_type?: RoleType | null;
+          requested_role_title?: string | null;
+          status?: MemberStatus;
           is_super_admin?: boolean;
           is_treasurer?: boolean;
           weekly_target_xp?: number;

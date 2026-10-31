@@ -1,13 +1,17 @@
+import Link from 'next/link';
 import { getCurrentProfile, getSystemSettings } from '@/lib/auth';
 import { RoleBadge } from '@/components/RoleBadge';
 import { SignOutButton } from '@/components/SignOutButton';
+import { ChangePasswordForm } from '@/components/ChangePasswordForm';
 import {
   Settings as SettingsIcon,
   User,
   Clock,
   Shield,
   Smartphone,
-  Info,
+  ShieldAlert,
+  ArrowRight,
+  KeyRound,
 } from 'lucide-react';
 
 export default async function SettingsPage() {
@@ -31,6 +35,30 @@ export default async function SettingsPage() {
         </div>
       </div>
 
+      {/* Super Admin Console Shortcut */}
+      {profile?.is_super_admin && (
+        <Link
+          href="/admin/pending"
+          className="p-4 rounded-3xl bg-gradient-to-r from-amber-500/10 via-amber-400/10 to-sky-500/10 border border-amber-300/60 shadow-xs flex items-center justify-between gap-3 group hover:border-amber-400 transition"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-amber-500 text-amber-950 flex items-center justify-center font-bold shadow-xs">
+              <ShieldAlert className="w-5 h-5 text-amber-950" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-900 font-display flex items-center gap-1.5">
+                Pending Member Approvals
+                <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500 text-amber-950 font-extrabold">
+                  Admin
+                </span>
+              </p>
+              <p className="text-xs text-slate-500">Review sign-up requests & assign team roles</p>
+            </div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-amber-600 group-hover:translate-x-1 transition" />
+        </Link>
+      )}
+
       {/* Member Profile Summary */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
         <div className="flex items-center justify-between">
@@ -41,7 +69,7 @@ export default async function SettingsPage() {
             </h2>
           </div>
           <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-            Active Member
+            {profile?.status === 'active' ? 'Active Member' : 'Pending Member'}
           </span>
         </div>
 
@@ -54,13 +82,17 @@ export default async function SettingsPage() {
 
             <div className="flex items-center justify-between text-xs py-1 border-b border-slate-100">
               <span className="text-slate-500">Role Title</span>
-              <RoleBadge
-                roleTitle={profile.role_title}
-                roleType={profile.role_type}
-                isSuperAdmin={profile.is_super_admin}
-                isTreasurer={profile.is_treasurer}
-                size="sm"
-              />
+              {profile.role_title ? (
+                <RoleBadge
+                  roleTitle={profile.role_title}
+                  roleType={profile.role_type || 'lead'}
+                  isSuperAdmin={profile.is_super_admin}
+                  isTreasurer={profile.is_treasurer}
+                  size="sm"
+                />
+              ) : (
+                <span className="text-amber-600 italic font-medium">Pending Assignment</span>
+              )}
             </div>
 
             <div className="flex items-center justify-between text-xs py-1 border-b border-slate-100">
@@ -71,7 +103,7 @@ export default async function SettingsPage() {
             <div className="flex items-center justify-between text-xs py-1">
               <span className="text-slate-500">Privileges</span>
               <span className="font-medium text-slate-700">
-                {profile.is_super_admin ? 'Super Admin' : 'Standard Access'}
+                {profile.is_super_admin ? 'Super Admin' : 'Standard Member'}
                 {profile.is_treasurer && ' • Treasurer'}
               </span>
             </div>
@@ -80,6 +112,9 @@ export default async function SettingsPage() {
           <p className="text-xs text-slate-400">Loading profile...</p>
         )}
       </div>
+
+      {/* Change Password Form */}
+      <ChangePasswordForm />
 
       {/* System Cadence Settings */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
@@ -91,7 +126,7 @@ export default async function SettingsPage() {
             </h2>
           </div>
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Global
+            Database Setting
           </span>
         </div>
 
@@ -103,7 +138,7 @@ export default async function SettingsPage() {
 
           <div className="flex items-center justify-between py-1 border-b border-slate-100">
             <span className="text-slate-500">Meeting Time</span>
-            <span className="font-bold text-slate-800">{settings.meeting_time} AM</span>
+            <span className="font-bold text-slate-800">{settings.meeting_time}</span>
           </div>
 
           <div className="flex items-center justify-between py-1 border-b border-slate-100">
@@ -112,8 +147,8 @@ export default async function SettingsPage() {
           </div>
 
           <div className="flex items-center justify-between py-1">
-            <span className="text-slate-500">Account Access</span>
-            <span className="font-semibold text-sky-700">Invite-Only (No public sign-up)</span>
+            <span className="text-slate-500">Registration Mode</span>
+            <span className="font-semibold text-sky-700">Self-Service with Team Join Code</span>
           </div>
         </div>
       </div>
@@ -128,7 +163,7 @@ export default async function SettingsPage() {
         </div>
 
         <p className="text-xs text-slate-600 leading-relaxed">
-          Raft Board is built as an installable Progressive Web App. Install it directly onto your smartphone home screen or desktop:
+          Raft Board is built as an installable Progressive Web App:
         </p>
 
         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70 space-y-1.5 text-xs text-slate-700">

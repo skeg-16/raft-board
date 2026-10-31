@@ -15,6 +15,7 @@ export async function POST() {
   }
 
   const cookieStore = await cookies();
+  cookieStore.delete('raft_user_session');
   cookieStore.delete('raft_demo_user');
 
   return NextResponse.json({ success: true });

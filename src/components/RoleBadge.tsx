@@ -3,16 +3,16 @@ import { ShieldCheck, Coins } from 'lucide-react';
 import type { RoleType } from '@/types/database';
 
 interface RoleBadgeProps {
-  roleTitle: string;
-  roleType: RoleType;
+  roleTitle?: string | null;
+  roleType?: RoleType | null;
   isSuperAdmin?: boolean;
   isTreasurer?: boolean;
   size?: 'sm' | 'md';
 }
 
 export function RoleBadge({
-  roleTitle,
-  roleType,
+  roleTitle = 'Member',
+  roleType = 'lead',
   isSuperAdmin = false,
   isTreasurer = false,
   size = 'md',
@@ -30,7 +30,7 @@ export function RoleBadge({
             : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
         }`}
       >
-        {roleTitle}
+        {roleTitle || 'Member'}
       </span>
 
       {isSuperAdmin && (
