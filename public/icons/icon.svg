@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c4a6e" />
+      <stop offset="50%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+    <linearGradient id="otterFur" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#9a5b32" />
+      <stop offset="100%" stop-color="#78350f" />
+    </linearGradient>
+    <linearGradient id="otterMuzzle" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fef3c7" />
+      <stop offset="100%" stop-color="#fde68a" />
+    </linearGradient>
+    <linearGradient id="waterWave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#bae6fd" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0284c7" stop-opacity="0.8" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGradient)" />
+
+  <!-- Outer Ring Glow -->
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#38bdf8" stroke-width="6" opacity="0.4" />
+
+  <!-- Water ripples in background -->
+  <path d="M 64 390 C 130 375, 180 405, 256 390 C 330 375, 380 405, 448 390" fill="none" stroke="url(#waterWave)" stroke-width="12" stroke-linecap="round" />
+  <path d="M 96 430 C 160 415, 210 445, 276 430 C 340 415, 390 445, 420 435" fill="none" stroke="#38bdf8" stroke-width="8" stroke-linecap="round" opacity="0.6" />
+
+  <!-- Otter Ears -->
+  <circle cx="160" cy="175" r="34" fill="#78350f" />
+  <circle cx="160" cy="175" r="20" fill="#fef3c7" />
+  <circle cx="352" cy="175" r="34" fill="#78350f" />
+  <circle cx="352" cy="175" r="20" fill="#fef3c7" />
+
+  <!-- Otter Head Base -->
+  <ellipse cx="256" cy="245" rx="120" ry="110" fill="url(#otterFur)" />
+
+  <!-- Otter Eyes -->
+  <circle cx="205" cy="225" r="14" fill="#0f172a" />
+  <circle cx="209" cy="221" r="5" fill="#ffffff" />
+  <circle cx="307" cy="225" r="14" fill="#0f172a" />
+  <circle cx="311" cy="221" r="5" fill="#ffffff" />
+
+  <!-- Otter Cheeks / Muzzle -->
+  <ellipse cx="256" cy="275" rx="55" ry="40" fill="url(#otterMuzzle)" />
+
+  <!-- Otter Nose -->
+  <path d="M 242 258 C 242 254, 270 254, 270 258 C 270 268, 256 276, 256 276 C 256 276, 242 268, 242 258 Z" fill="#0f172a" />
+
+  <!-- Mouth & Whiskers -->
+  <path d="M 256 276 L 256 288" stroke="#0f172a" stroke-width="4" stroke-linecap="round" />
+  <path d="M 240 288 C 248 296, 256 294, 256 288 C 256 294, 264 296, 272 288" fill="none" stroke="#0f172a" stroke-width="4" stroke-linecap="round" />
+
+  <!-- Whiskers Left -->
+  <line x1="185" y1="270" x2="135" y2="265" stroke="#0f172a" stroke-width="3" stroke-linecap="round" opacity="0.7" />
+  <line x1="185" y1="282" x2="130" y2="285" stroke="#0f172a" stroke-width="3" stroke-linecap="round" opacity="0.7" />
+  
+  <!-- Whiskers Right -->
+  <line x1="327" y1="270" x2="377" y2="265" stroke="#0f172a" stroke-width="3" stroke-linecap="round" opacity="0.7" />
+  <line x1="327" y1="282" x2="382" y2="285" stroke="#0f172a" stroke-width="3" stroke-linecap="round" opacity="0.7" />
+
+  <!-- Otter Paws holding the edge -->
+  <ellipse cx="190" cy="350" rx="26" ry="32" fill="#9a5b32" />
+  <ellipse cx="322" cy="350" rx="26" ry="32" fill="#9a5b32" />
+  <!-- Claws detail -->
+  <circle cx="178" cy="336" r="4" fill="#fef3c7" />
+  <circle cx="190" cy="332" r="4" fill="#fef3c7" />
+  <circle cx="202" cy="336" r="4" fill="#fef3c7" />
+  <circle cx="310" cy="336" r="4" fill="#fef3c7" />
+  <circle cx="322" cy="332" r="4" fill="#fef3c7" />
+  <circle cx="334" cy="336" r="4" fill="#fef3c7" />
+</svg>
