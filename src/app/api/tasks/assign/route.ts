@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile } from '@/lib/auth';
+import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
 import { getCurrentWeek } from '@/lib/tasks';
 import { createAdminClient } from '@/lib/supabase/admin';
 import type { Task, TaskCategory, TaskSize } from '@/types/database';
@@ -45,6 +45,20 @@ export async function POST(request: Request) {
 
   if (isConfigured) {
     const admin = createAdminClient();
+
+    // Verify target member is active (Executives can assign ONLY to active members)
+    const { data: targetProfile, error: targetError } = await (admin.from('profiles') as any)
+      .select('id, status')
+      .eq('id', userId)
+      .single();
+
+    if (targetError || !targetProfile || targetProfile.status !== 'active') {
+      return NextResponse.json(
+        { error: 'Cannot assign tasks to non-active or non-existent members.' },
+        { status: 400 }
+      );
+    }
+
     const { data, error } = await (admin.from('tasks') as any)
       .insert({
         week_id: currentWeek.id,
@@ -68,8 +82,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, task: data });
   }
 
-  // Local fallback
-  const { __raft_tasks } = globalThis as any;
+  // Local fallback: verify target member is active
+  const userStore = getRuntimeUserStore();
+  const targetUser = userStore.get(userId);
+  if (!targetUser || targetUser.status !== 'active') {
+    return NextResponse.json(
+      { error: 'Cannot assign tasks to non-active or non-existent members.' },
+      { status: 400 }
+    );
+  }
   const taskId = `task-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const newTask: Task = {
     id: taskId,

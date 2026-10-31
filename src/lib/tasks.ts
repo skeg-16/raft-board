@@ -308,8 +308,41 @@ export async function getUserLevelAndXP(userId: string): Promise<LevelInfo> {
   return calculateLevelInfo(totalXP);
 }
 
+// In-flight concurrency locks for finishing tasks
+const finishLocks = new Map<string, Promise<void>>();
+
 // Finish task and award XP (Enforces 150 task cap, 10 early cutoff bonus, and idempotency)
 export async function finishTaskAndAwardXP(
+  taskId: string,
+  userId: string
+): Promise<{
+  success: boolean;
+  alreadyFinished: boolean;
+  taskXPAwarded: number;
+  bonusXPAwarded: number;
+  newTotalTaskXP: number;
+  message?: string;
+}> {
+  // Concurrency lock: serialize simultaneous finish requests for the same task
+  const existingLock = finishLocks.get(taskId) || Promise.resolve();
+  let releaseLock: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  finishLocks.set(taskId, currentLock);
+
+  await existingLock;
+  try {
+    return await executeFinishTaskAndAwardXP(taskId, userId);
+  } finally {
+    releaseLock!();
+    if (finishLocks.get(taskId) === currentLock) {
+      finishLocks.delete(taskId);
+    }
+  }
+}
+
+async function executeFinishTaskAndAwardXP(
   taskId: string,
   userId: string
 ): Promise<{
@@ -352,7 +385,7 @@ export async function finishTaskAndAwardXP(
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
-  // Idempotency check
+  // Idempotency check: if already finished, return zero additional XP
   if (task.status === 'done') {
     let existingXP = 0;
     for (const ev of xpEvents.values()) {
@@ -397,7 +430,7 @@ export async function finishTaskAndAwardXP(
   const awardedTaskXP = Math.min(baseXP, availableCap);
 
   // Record task completion event
-  const taskEventId = `xp-${Date.now()}-${Math.random()}`;
+  const taskEventId = `xp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   xpEvents.set(taskEventId, {
     id: taskEventId,
     user_id: userId,
@@ -425,7 +458,7 @@ export async function finishTaskAndAwardXP(
   }
 
   if (!hasExistingBonus) {
-    const bonusEventId = `xp-bonus-${Date.now()}`;
+    const bonusEventId = `xp-bonus-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     xpEvents.set(bonusEventId, {
       id: bonusEventId,
       user_id: userId,
@@ -446,6 +479,79 @@ export async function finishTaskAndAwardXP(
     bonusXPAwarded: bonusAwarded ? 10 : 0,
     newTotalTaskXP: currentTaskXP + awardedTaskXP,
   };
+}
+
+// Helper: Recalculate week XP and re-evaluate early cutoff bonus in memory
+export function recalculateWeekXPInMemory(userId: string, weekId: string) {
+  const { tasks, xpEvents, weeks } = getStores();
+  const week = weeks.get(weekId);
+  const cutoffTime = week ? new Date(week.cutoff_at).getTime() : Infinity;
+
+  // 1. Recalculate all non-voided task completions in chronological order up to 150 cap
+  let runningXP = 0;
+  const activeTaskEvents = Array.from(xpEvents.values())
+    .filter(
+      (ev) =>
+        ev.user_id === userId &&
+        ev.week_id === weekId &&
+        ev.reason === 'task_completion' &&
+        !ev.voided
+    )
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  for (const ev of activeTaskEvents) {
+    const task = tasks.get(ev.task_id || '');
+    const baseXP = task ? TASK_XP_VALUES[task.size] : ev.amount;
+    const newAward = Math.min(baseXP, Math.max(0, 150 - runningXP));
+    ev.amount = newAward;
+    runningXP += newAward;
+  }
+
+  // 2. Early cutoff bonus re-evaluation:
+  // Find active early bonus event for this user & week
+  const activeBonus = Array.from(xpEvents.values()).find(
+    (ev) =>
+      ev.user_id === userId &&
+      ev.week_id === weekId &&
+      ev.reason === 'early_cutoff_bonus' &&
+      !ev.voided
+  );
+
+  // Find earliest remaining finished task before cutoff in this week
+  const remainingFinishedBeforeCutoff = Array.from(tasks.values())
+    .filter(
+      (t) =>
+        t.user_id === userId &&
+        t.week_id === weekId &&
+        t.status === 'done' &&
+        t.finished_at &&
+        new Date(t.finished_at).getTime() < cutoffTime
+    )
+    .sort((a, b) => new Date(a.finished_at!).getTime() - new Date(b.finished_at!).getTime());
+
+  if (remainingFinishedBeforeCutoff.length > 0) {
+    const earliest = remainingFinishedBeforeCutoff[0];
+    if (activeBonus) {
+      activeBonus.task_id = earliest.id;
+    } else {
+      const bonusId = `xp-bonus-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      xpEvents.set(bonusId, {
+        id: bonusId,
+        user_id: userId,
+        task_id: earliest.id,
+        week_id: weekId,
+        amount: 10,
+        reason: 'early_cutoff_bonus',
+        voided: false,
+        created_at: new Date().toISOString(),
+      });
+    }
+  } else {
+    // No finished tasks before cutoff remain -> void any active bonus
+    if (activeBonus) {
+      activeBonus.voided = true;
+    }
+  }
 }
 
 // Undo task completion
@@ -491,30 +597,80 @@ export async function undoTaskCompletion(
     }
   }
 
-  // Recalculate remaining active tasks in this week up to 150 cap
-  let runningXP = 0;
-  const activeEvents = Array.from(xpEvents.values())
-    .filter((ev) => ev.user_id === userId && ev.week_id === task.week_id && ev.reason === 'task_completion' && !ev.voided)
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-
-  for (const ev of activeEvents) {
-    const evTask = tasks.get(ev.task_id || '');
-    const baseXP = evTask ? TASK_XP_VALUES[evTask.size] : ev.amount;
-    const newAward = Math.min(baseXP, Math.max(0, 150 - runningXP));
-    ev.amount = newAward;
-    runningXP += newAward;
-  }
-
-  // If no remaining active task in week, void bonus as well
-  if (activeEvents.length === 0) {
-    for (const ev of xpEvents.values()) {
-      if (ev.user_id === userId && ev.week_id === task.week_id && ev.reason === 'early_cutoff_bonus') {
-        ev.voided = true;
-      }
+  // If this task held the early bonus, void that event so it can be re-evaluated
+  for (const ev of xpEvents.values()) {
+    if (ev.task_id === taskId && ev.reason === 'early_cutoff_bonus') {
+      ev.voided = true;
     }
   }
 
-  return { success: true, message: 'Task marked unfinished and XP recalculated.' };
+  // Recalculate remaining active tasks in this week and re-award bonus if another task qualifies
+  recalculateWeekXPInMemory(userId, task.week_id);
+
+  return {
+    success: true,
+    message: 'Task marked unfinished, bonus re-evaluated, and weekly cap recalculated.',
+  };
+}
+
+// Update task size (Enforces rule: cannot edit size of finished task)
+export async function updateTaskSize(
+  taskId: string,
+  userId: string,
+  newSize: TaskSize
+): Promise<{ success: boolean; task: Task }> {
+  const { tasks, weeks } = getStores();
+  const task = tasks.get(taskId);
+  if (!task) throw new Error('Task not found.');
+
+  const week = weeks.get(task.week_id);
+  if (week && new Date() >= new Date(week.cutoff_at)) {
+    throw new Error('Week is locked: Saturday cutoff has passed.');
+  }
+
+  if (task.status === 'done' && task.size !== newSize) {
+    throw new Error(
+      'Cannot edit the size of a finished task. Please mark the task unfinished (undo) first.'
+    );
+  }
+
+  task.size = newSize;
+  task.updated_at = new Date().toISOString();
+  tasks.set(taskId, task);
+
+  return { success: true, task };
+}
+
+// Delete task (Recalculates XP & re-evaluates bonus if task was finished)
+export async function deleteTask(
+  taskId: string,
+  userId: string
+): Promise<{ success: boolean; message: string }> {
+  const { tasks, xpEvents, weeks } = getStores();
+  const task = tasks.get(taskId);
+  if (!task) throw new Error('Task not found.');
+
+  const week = weeks.get(task.week_id);
+  if (week && new Date() >= new Date(week.cutoff_at)) {
+    throw new Error('Week is locked: Saturday cutoff has passed.');
+  }
+
+  const wasDone = task.status === 'done';
+
+  // Void any XP events
+  for (const ev of xpEvents.values()) {
+    if (ev.task_id === taskId) {
+      ev.voided = true;
+    }
+  }
+
+  tasks.delete(taskId);
+
+  if (wasDone) {
+    recalculateWeekXPInMemory(userId, task.week_id);
+  }
+
+  return { success: true, message: 'Task deleted and XP recalculated.' };
 }
 
 // Toggle Rest Mode (waives target, freezes streak, up to 2 per month)
@@ -546,7 +702,10 @@ export async function toggleRestMode(
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
-  const monthYear = week.start_at.substring(0, 7);
+  // Format calendar month in Asia/Manila (UTC+8)
+  const tzOffset = 8 * 60 * 60 * 1000;
+  const manilaDate = new Date(new Date(week.start_at).getTime() + tzOffset);
+  const monthYear = `${manilaDate.getUTCFullYear()}-${String(manilaDate.getUTCMonth() + 1).padStart(2, '0')}`;
 
   // Check if currently resting -> toggle off
   let existingId: string | null = null;
@@ -571,7 +730,9 @@ export async function toggleRestMode(
   }
 
   if (monthlyCount >= 2) {
-    throw new Error('Rest Mode limit reached: you can only activate Rest Mode for up to 2 weeks per month.');
+    throw new Error(
+      'Rest Mode limit reached: you can only activate Rest Mode for up to 2 weeks per month.'
+    );
   }
 
   const id = `rest-${userId}-${weekId}`;
@@ -583,5 +744,9 @@ export async function toggleRestMode(
     created_at: new Date().toISOString(),
   });
 
-  return { success: true, resting: true, message: 'Rest mode activated. Weekly target waived and streak frozen.' };
+  return {
+    success: true,
+    resting: true,
+    message: 'Rest mode activated. Weekly target waived and streak frozen.',
+  };
 }

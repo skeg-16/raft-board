@@ -38,6 +38,7 @@ async function runPhase2E2E() {
 
   // 2. Member Signup & Confirmation (Marcus Vance)
   console.log('\n2. Setting up Member (Marcus Vance)...');
+  const memberName = `Marcus Vance ${ts}`;
   const memberEmail = `marcus_${ts}@otter.systems`;
   // Sign up in new context or page fetch
   const signupRes = await fetch('http://localhost:3000/api/auth/signup', {
@@ -47,7 +48,7 @@ async function runPhase2E2E() {
       'x-test-client-id': testClientId,
     },
     body: JSON.stringify({
-      full_name: 'Marcus Vance',
+      full_name: memberName,
       email: memberEmail,
       password: 'MarcusPassword123!',
       desired_role_title: 'Backend Lead',
@@ -60,9 +61,9 @@ async function runPhase2E2E() {
   // Executive approves Marcus in /admin/pending
   await page.goto('http://localhost:3000/admin/pending');
   console.log('   Navigated to /admin/pending, current URL:', page.url());
-  await page.waitForSelector('text=Marcus Vance', { timeout: 5000 });
-  await page.click('button:has-text("Approve & Activate")');
-  await page.waitForSelector('text=All Clear! No Pending Requests', { timeout: 5000 });
+  await page.waitForSelector(`text=${memberName}`, { timeout: 5000 });
+  await page.locator(`.bg-white:has-text("${memberName}") button:has-text("Approve & Activate")`).click();
+  await page.waitForSelector(`text=${memberName}`, { state: 'detached', timeout: 5000 });
   console.log('   ✓ Executive approved Marcus Vance');
 
   // Confirm Marcus email
@@ -76,8 +77,8 @@ async function runPhase2E2E() {
 
   // Fill assignment modal
   await page.waitForSelector('text=Assign Task', { timeout: 3000 });
-  await page.waitForSelector('option:has-text("Marcus Vance")', { state: 'attached', timeout: 4000 });
-  await page.selectOption('form select:first-of-type', { label: 'Marcus Vance (Backend Lead)' });
+  await page.waitForSelector(`option:has-text("${memberName}")`, { state: 'attached', timeout: 4000 });
+  await page.selectOption('form select:first-of-type', { label: `${memberName} (Backend Lead)` });
 
   await page.fill('input[placeholder="e.g. Build API rate limiter"]', 'Implement Database RPC Triggers');
   await page.selectOption('select:has-text("Platforms")', 'Platforms');
