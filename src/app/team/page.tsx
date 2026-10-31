@@ -1,5 +1,6 @@
 import { getTeamProfiles } from '@/lib/auth';
 import { RoleBadge } from '@/components/RoleBadge';
+import { OtterIcon } from '@/components/OtterIcon';
 import { Users, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 export default async function TeamPage() {
@@ -27,9 +28,9 @@ export default async function TeamPage() {
 
       {/* Philosophy banner */}
       <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-50 to-blue-50 border border-sky-200/80 text-xs text-sky-950 flex items-center gap-3">
-        <span className="text-2xl select-none" role="img" aria-label="Otter raft">
-          🦦
-        </span>
+        <div className="w-9 h-9 rounded-xl bg-sky-600/10 border border-sky-400/30 text-sky-700 flex items-center justify-center shrink-0">
+          <OtterIcon className="w-5 h-5 text-sky-700" />
+        </div>
         <p className="leading-snug">
           <strong>A raft stays afloat together.</strong> This board makes it obvious who has updated their weekly progress and who hasn't—for team support, not surveillance!
         </p>

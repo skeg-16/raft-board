@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Calendar, Sparkles } from 'lucide-react';
+import { Calendar } from 'lucide-react';
+import { OtterIcon } from '@/components/OtterIcon';
 import type { Profile } from '@/types/database';
 
 interface AppHeaderProps {
@@ -30,24 +31,22 @@ export function AppHeader({ currentProfile }: AppHeaderProps) {
 
   return (
     <header className="sticky top-0 z-20 bg-slate-900/95 backdrop-blur-md border-b border-sky-950 text-white shadow-md">
-      <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+      <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between">
         {/* Brand & Mascot */}
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-500 to-sky-700 p-1 flex items-center justify-center shadow-md shadow-sky-500/20 group-hover:scale-105 transition transform">
-            <span className="text-xl select-none" role="img" aria-label="Otter">
-              🦦
-            </span>
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-sky-700 text-sky-100 flex items-center justify-center shadow-md shadow-sky-500/20 group-hover:scale-105 transition transform border border-sky-400/30">
+            <OtterIcon className="w-5 h-5 text-sky-100" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-extrabold text-base tracking-tight text-white font-display">
+              <span className="font-extrabold text-sm tracking-tight text-white font-display">
                 Raft Board
               </span>
               <span className="px-1.5 py-0.2 rounded text-[10px] font-bold tracking-wider uppercase bg-sky-500/20 text-sky-300 border border-sky-400/30">
                 OSS
               </span>
             </div>
-            <p className="text-[11px] text-sky-200/70 font-medium leading-none mt-0.5">
+            <p className="text-[10px] text-sky-200/70 font-medium leading-none mt-0.5">
               Building software like no otter
             </p>
           </div>
@@ -66,7 +65,7 @@ export function AppHeader({ currentProfile }: AppHeaderProps) {
           {currentProfile ? (
             <Link
               href="/settings"
-              className="w-9 h-9 rounded-full bg-gradient-to-tr from-sky-600 to-sky-400 text-white font-bold text-xs flex items-center justify-center shadow-sm border border-white/20 hover:ring-2 hover:ring-sky-300 transition"
+              className="relative w-8 h-8 rounded-full bg-gradient-to-tr from-sky-600 to-sky-400 text-white font-bold text-xs flex items-center justify-center shadow-xs border border-white/20 hover:ring-2 hover:ring-sky-300 transition"
               title={`${currentProfile.full_name} (${currentProfile.role_title})`}
             >
               {currentProfile.full_name
@@ -74,6 +73,7 @@ export function AppHeader({ currentProfile }: AppHeaderProps) {
                 .map((n) => n[0])
                 .join('')
                 .slice(0, 2)}
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-slate-900" />
             </Link>
           ) : (
             <div className="w-8 h-8 rounded-full bg-slate-800 animate-pulse" />

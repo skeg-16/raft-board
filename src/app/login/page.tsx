@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Lock, Mail, ArrowRight, ShieldAlert, Sparkles } from 'lucide-react';
+import { OtterIcon } from '@/components/OtterIcon';
 
 const SEED_TEST_USERS = [
   { email: 'cto@otter.systems', name: 'Alex Rivera', role: 'CTO (Super Admin)' },
@@ -63,10 +64,8 @@ export default function LoginPage() {
       <div className="max-w-md w-full mx-auto space-y-6">
         {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-sky-400 to-sky-600 shadow-xl shadow-sky-500/25 p-3 mx-auto mb-2 transform hover:scale-105 transition duration-200">
-            <span className="text-4xl select-none" role="img" aria-label="Otter mascot">
-              🦦
-            </span>
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-sky-400 to-sky-600 shadow-xl shadow-sky-500/25 p-3 mx-auto mb-2 transform hover:scale-105 transition duration-200 border border-sky-300/40 text-white">
+            <OtterIcon className="w-12 h-12 text-white" />
           </div>
 
           <h1 className="text-3xl font-extrabold text-white tracking-tight font-display">

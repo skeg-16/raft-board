@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { getCurrentProfile, getSystemSettings } from '@/lib/auth';
 import { RoleBadge } from '@/components/RoleBadge';
+import { OtterIcon } from '@/components/OtterIcon';
 import {
   Calendar,
   Sparkles,
@@ -10,6 +11,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Flame,
+  CalendarCheck2,
+  Users2,
 } from 'lucide-react';
 
 export default async function HomePage() {
@@ -30,17 +33,15 @@ export default async function HomePage() {
               Raft Member
             </span>
             <h1 className="text-xl font-extrabold text-white font-display">
-              Ahoy, {profile?.full_name?.split(' ')[0] || 'Otter'}! 🦦
+              Ahoy, {profile?.full_name?.split(' ')[0] || 'Otter'}!
             </h1>
             <p className="text-xs text-sky-200/80">
               Welcome to your OSS weekly progress game.
             </p>
           </div>
 
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-400 to-sky-600 p-0.5 shadow-md flex items-center justify-center shrink-0">
-            <span className="text-2xl" role="img" aria-label="Otter">
-              🦦
-            </span>
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-500 to-sky-700 border border-sky-400/40 p-2 shadow-md flex items-center justify-center shrink-0 text-sky-100">
+            <OtterIcon className="w-7 h-7 text-sky-100" />
           </div>
         </div>
 
@@ -108,7 +109,7 @@ export default async function HomePage() {
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center font-bold text-sm group-hover:scale-105 transition">
-              📅
+              <CalendarCheck2 className="w-5 h-5 text-sky-600" />
             </div>
             <div>
               <p className="text-sm font-bold text-slate-900">My Week</p>
@@ -124,7 +125,7 @@ export default async function HomePage() {
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm group-hover:scale-105 transition">
-              👥
+              <Users2 className="w-5 h-5 text-emerald-600" />
             </div>
             <div>
               <p className="text-sm font-bold text-slate-900">Team Raft</p>
@@ -140,7 +141,7 @@ export default async function HomePage() {
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-sm group-hover:scale-105 transition">
-              🏆
+              <Trophy className="w-5 h-5 text-amber-600" />
             </div>
             <div>
               <p className="text-sm font-bold text-slate-900">Leaderboard</p>

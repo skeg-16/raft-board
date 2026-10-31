@@ -34,6 +34,12 @@ export async function updateSession(request: NextRequest) {
   if (!isConfigured) {
     const isLogin = pathname === '/login';
     const isChangePassword = pathname === '/change-password';
+    const isApiAuth = pathname.startsWith('/api/auth');
+
+    // API auth endpoints are always accessible
+    if (isApiAuth) {
+      return supabaseResponse;
+    }
 
     // In local demo mode
     if (!demoUserCookie && !isLogin) {

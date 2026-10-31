@@ -1,13 +1,25 @@
 import { getTeamProfiles } from '@/lib/auth';
-import { Trophy, Medal, Award, Flame, Info, Sparkles } from 'lucide-react';
+import {
+  Trophy,
+  Medal,
+  Award,
+  Flame,
+  Info,
+  Sparkles,
+  Footprints,
+  Navigation,
+  Waves,
+  Anchor,
+  Crown,
+} from 'lucide-react';
 
 const OTTER_LEVELS = [
-  { name: 'Pup', minXp: 0, icon: '🐾' },
-  { name: 'Paddler', minXp: 150, icon: '🛶' },
-  { name: 'Swimmer', minXp: 450, icon: '🏊' },
-  { name: 'Diver', minXp: 900, icon: '🤿' },
-  { name: 'Raft Leader', minXp: 1500, icon: '⭐' },
-  { name: 'Keystone', minXp: 2500, icon: '👑' },
+  { name: 'Pup', minXp: 0, icon: Footprints, color: 'text-amber-600' },
+  { name: 'Paddler', minXp: 150, icon: Navigation, color: 'text-sky-600' },
+  { name: 'Swimmer', minXp: 450, icon: Waves, color: 'text-cyan-600' },
+  { name: 'Diver', minXp: 900, icon: Anchor, color: 'text-indigo-600' },
+  { name: 'Raft Leader', minXp: 1500, icon: Award, color: 'text-purple-600' },
+  { name: 'Keystone', minXp: 2500, icon: Crown, color: 'text-amber-500' },
 ];
 
 export default async function LeaderboardPage() {
@@ -58,7 +70,7 @@ export default async function LeaderboardPage() {
           {/* Rank 1 */}
           <div className="space-y-2">
             <div className="w-12 h-12 rounded-full bg-amber-500/20 border-2 border-amber-400 text-amber-300 mx-auto flex items-center justify-center text-sm font-extrabold shadow-lg shadow-amber-500/20">
-              👑 1st
+              <Crown className="w-5 h-5 text-amber-400 inline" />
             </div>
             <div className="bg-gradient-to-t from-sky-900 to-sky-800 border border-amber-400/40 rounded-2xl p-2.5 h-32 flex flex-col justify-end">
               <p className="text-xs font-black text-amber-300 truncate">{members[0]?.full_name?.split(' ')[0] || 'Otter'}</p>
@@ -92,18 +104,21 @@ export default async function LeaderboardPage() {
         </h2>
 
         <div className="grid grid-cols-2 gap-2 text-xs">
-          {OTTER_LEVELS.map((lvl) => (
-            <div
-              key={lvl.name}
-              className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between"
-            >
-              <div className="flex items-center gap-2">
-                <span>{lvl.icon}</span>
-                <span className="font-semibold text-slate-800">{lvl.name}</span>
+          {OTTER_LEVELS.map((lvl) => {
+            const Icon = lvl.icon;
+            return (
+              <div
+                key={lvl.name}
+                className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2">
+                  <Icon className={`w-4 h-4 ${lvl.color}`} />
+                  <span className="font-semibold text-slate-800">{lvl.name}</span>
+                </div>
+                <span className="text-[11px] font-bold text-sky-700">{lvl.minXp} XP</span>
               </div>
-              <span className="text-[11px] font-bold text-sky-700">{lvl.minXp} XP</span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
