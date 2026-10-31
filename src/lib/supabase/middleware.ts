@@ -20,8 +20,8 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
-  // Public auth API routes
-  if (pathname.startsWith('/api/auth')) {
+  // Public auth API routes and auth callbacks
+  if (pathname.startsWith('/api/auth') || pathname.startsWith('/auth')) {
     return supabaseResponse;
   }
 
@@ -51,12 +51,26 @@ export async function updateSession(request: NextRequest) {
 
     if (sessionCookie) {
       try {
-        const session = JSON.parse(sessionCookie.value) as {
+        let rawVal = sessionCookie.value;
+        try {
+          rawVal = decodeURIComponent(rawVal);
+        } catch {
+          // already decoded
+        }
+        const session = JSON.parse(rawVal) as {
           id: string;
           status: string;
         };
 
-        if (session.status === 'pending') {
+        const status = session.status || 'pending';
+
+        if (status === 'pending') {
+          if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
+            return NextResponse.json(
+              { error: 'Forbidden: Account is pending admin approval.' },
+              { status: 403 }
+            );
+          }
           if (!isPendingApproval && pathname !== '/api/auth/signout') {
             const url = request.nextUrl.clone();
             url.pathname = '/pending-approval';
@@ -65,14 +79,22 @@ export async function updateSession(request: NextRequest) {
           return supabaseResponse;
         }
 
-        if (session.status === 'deactivated') {
+        if (status === 'deactivated') {
+          if (pathname.startsWith('/api/')) {
+            return NextResponse.json(
+              { error: 'Forbidden: Account has been deactivated.' },
+              { status: 403 }
+            );
+          }
           const url = request.nextUrl.clone();
           url.pathname = '/login';
           url.searchParams.set('error', 'deactivated');
-          return NextResponse.redirect(url);
+          const res = NextResponse.redirect(url);
+          res.cookies.delete('raft_user_session');
+          return res;
         }
 
-        if (session.status === 'active') {
+        if (status === 'active') {
           if (isPublicAuthPage || isPendingApproval) {
             const url = request.nextUrl.clone();
             url.pathname = '/';
@@ -129,6 +151,12 @@ export async function updateSession(request: NextRequest) {
     const status = profile?.status ?? 'pending';
 
     if (status === 'pending') {
+      if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
+        return NextResponse.json(
+          { error: 'Forbidden: Account is pending admin approval.' },
+          { status: 403 }
+        );
+      }
       if (!isPendingApproval && pathname !== '/api/auth/signout') {
         const url = request.nextUrl.clone();
         url.pathname = '/pending-approval';
@@ -138,10 +166,19 @@ export async function updateSession(request: NextRequest) {
     }
 
     if (status === 'deactivated') {
+      await supabase.auth.signOut();
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json(
+          { error: 'Forbidden: Account has been deactivated.' },
+          { status: 403 }
+        );
+      }
       const url = request.nextUrl.clone();
       url.pathname = '/login';
       url.searchParams.set('error', 'deactivated');
-      return NextResponse.redirect(url);
+      const res = NextResponse.redirect(url);
+      res.cookies.delete('raft_user_session');
+      return res;
     }
 
     if (status === 'active') {

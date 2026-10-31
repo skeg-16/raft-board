@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
-import { getRuntimeUserStore } from '@/lib/auth';
+import { checkBootstrapAdmin, getRuntimeUserStore } from '@/lib/auth';
 import type { Profile } from '@/types/database';
 
 export async function POST(request: Request) {
   try {
     const ip = getClientIp(request);
-    const rateLimit = checkRateLimit(ip, 'login');
+    // Persistent Rate Limit Check
+    const rateLimit = await checkRateLimit(ip, 'login');
 
     if (!rateLimit.success) {
       return NextResponse.json(
@@ -38,7 +40,7 @@ export async function POST(request: Request) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
       !supabaseUrl.includes('your-project-ref');
 
-    // Live Supabase Authentication
+    // 1. Live Supabase Authentication
     if (isConfigured) {
       const supabase = await createClient();
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -47,25 +49,50 @@ export async function POST(request: Request) {
       });
 
       if (error || !data.user) {
+        if (error?.message?.toLowerCase().includes('email not confirmed')) {
+          return NextResponse.json(
+            { error: 'Email confirmation required. Please check your inbox and verify your email.' },
+            { status: 403 }
+          );
+        }
         return NextResponse.json(
           { error: error?.message || 'Invalid email or password.' },
           { status: 401 }
         );
       }
 
-      // Query user profile
+      // Check user profile
       const { data: profileData } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', data.user.id)
         .single();
 
-      const profile = profileData as unknown as Profile | null;
-      const status = profile?.status ?? 'pending';
+      let profile = profileData as unknown as Profile | null;
+      let status = profile?.status ?? 'pending';
 
-      if (status === 'deactivated') {
+      // Check if user is a confirmed Bootstrap Admin whose approval should activate now
+      const { isBootstrap, isTreasurer } = checkBootstrapAdmin(normalizedEmail);
+      if (isBootstrap && data.user.email_confirmed_at && status === 'pending') {
+        const adminClient = createAdminClient();
+        await (adminClient.from('profiles') as any)
+          .update({
+            status: 'active',
+            active: true,
+            is_super_admin: true,
+            is_treasurer: isTreasurer,
+            role_type: 'executive',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', data.user.id);
+
+        status = 'active';
+      }
+
+      // Block rejected or deactivated accounts
+      if (status === 'deactivated' || profile?.active === false) {
         return NextResponse.json(
-          { error: 'Your account has been deactivated. Please contact an administrator.' },
+          { error: 'Your account has been rejected or deactivated by an administrator.' },
           { status: 403 }
         );
       }
@@ -81,9 +108,9 @@ export async function POST(request: Request) {
       });
     }
 
-    // Local / Test Runtime Mode
+    // 2. Local / Test Runtime Fallback Mode
     const store = getRuntimeUserStore();
-    let foundProfile: (Profile & { email?: string; passwordHash?: string }) | undefined;
+    let foundProfile: (Profile & { email?: string; passwordHash?: string; email_confirmed?: boolean }) | undefined;
 
     for (const p of store.values()) {
       if ((p as any).email === normalizedEmail) {
@@ -99,15 +126,44 @@ export async function POST(request: Request) {
       );
     }
 
-    if (foundProfile.status === 'deactivated') {
+    // RULE 1: Email confirmation required
+    if (foundProfile.email_confirmed === false) {
       return NextResponse.json(
-        { error: 'Your account has been deactivated. Please contact an administrator.' },
+        { error: 'Email confirmation required. Please verify your email before logging in.' },
         { status: 403 }
       );
     }
 
-    const cookieStore = await cookies();
-    cookieStore.set(
+    // Check Bootstrap auto-approval (Only triggers if email is confirmed!)
+    const { isBootstrap, isTreasurer } = checkBootstrapAdmin(normalizedEmail);
+    if (isBootstrap && foundProfile.email_confirmed && foundProfile.status === 'pending') {
+      foundProfile.status = 'active';
+      foundProfile.active = true;
+      foundProfile.is_super_admin = true;
+      foundProfile.is_treasurer = isTreasurer;
+      foundProfile.role_type = 'executive';
+      store.set(foundProfile.id, foundProfile);
+    }
+
+    // Block rejected or deactivated accounts
+    if (foundProfile.status === 'deactivated') {
+      return NextResponse.json(
+        { error: 'Your account has been rejected or deactivated by an administrator.' },
+        { status: 403 }
+      );
+    }
+
+    const res = NextResponse.json({
+      success: true,
+      user: {
+        id: foundProfile.id,
+        email: normalizedEmail,
+      },
+      profile: foundProfile,
+      status: foundProfile.status,
+    });
+
+    res.cookies.set(
       'raft_user_session',
       JSON.stringify({
         id: foundProfile.id,
@@ -123,15 +179,7 @@ export async function POST(request: Request) {
       }
     );
 
-    return NextResponse.json({
-      success: true,
-      user: {
-        id: foundProfile.id,
-        email: normalizedEmail,
-      },
-      profile: foundProfile,
-      status: foundProfile.status,
-    });
+    return res;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Login failed';
     return NextResponse.json({ error: message }, { status: 500 });

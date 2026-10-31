@@ -11,7 +11,7 @@ if (!fs.existsSync(screenshotsDir)) {
 }
 
 async function runTests() {
-  console.log('🚀 Running revised Phase 1 E2E tests (Self-Service, Approval, Rate-Limiting)...');
+  console.log('🚀 Running revised Phase 1 E2E tests (Email confirmation, Approval, RLS, Rate-Limiting)...');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -20,13 +20,7 @@ async function runTests() {
   console.log('1. Testing unauthenticated redirect...');
   await page.goto('http://localhost:3000/');
   await page.waitForURL('**/login', { timeout: 10000 });
-  console.log('   ✓ Unauthenticated redirected to /login');
-
-  // Capture Login Screenshots
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'login-revised-mobile.png') });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'login-revised-desktop.png') });
+  console.log('   ✓ Unauthenticated user redirected to /login');
 
   // 2. Test Invalid Team Join Code on Signup
   console.log('2. Testing invalid Team Join Code rejection...');
@@ -37,7 +31,6 @@ async function runTests() {
   await page.fill('input[placeholder="Enter secret team join code"]', 'WRONG-CODE');
   await page.click('button[type="submit"]');
 
-  // Verify rejection
   await page.waitForSelector('text=Invalid Team Join Code', { timeout: 5000 });
   console.log('   ✓ Invalid join code correctly rejected by server');
 
@@ -46,15 +39,8 @@ async function runTests() {
   await page.fill('input[placeholder="Enter secret team join code"]', 'OTTER-RAFT-2026');
   await page.click('button[type="submit"]');
 
-  // Must redirect to /pending-approval
   await page.waitForURL('**/pending-approval', { timeout: 10000 });
   console.log('   ✓ Successfully routed new user to /pending-approval');
-
-  // Screenshots of Pending Approval Screen
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'pending-approval-mobile.png') });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'pending-approval-desktop.png') });
 
   // 4. Test Pending User is BLOCKED from reading app data
   console.log('4. Testing pending user blocked from accessing app data...');
@@ -76,7 +62,7 @@ async function runTests() {
   await page.waitForURL('**/login', { timeout: 5000 });
   console.log('   ✓ Signed out to /login');
 
-  // 6. Test Bootstrap Super Admin Registration (Christian)
+  // 6. Test Bootstrap Super Admin Registration & Email Confirmation Requirement
   console.log('6. Testing Bootstrap Super Admin signup (christian@otter.systems)...');
   await page.goto('http://localhost:3000/signup');
   await page.fill('input[placeholder="e.g. Christian Grey"]', 'Christian');
@@ -85,21 +71,24 @@ async function runTests() {
   await page.fill('input[placeholder="Enter secret team join code"]', 'OTTER-RAFT-2026');
   await page.click('button[type="submit"]');
 
-  // Bootstrap admin should be auto-approved and land straight on Home (/)
+  // RULE 1: At signup, even bootstrap admin starts as PENDING until email confirmation!
+  await page.waitForURL('**/pending-approval', { timeout: 10000 });
+  console.log('   ✓ Bootstrap admin started as pending before email confirmation');
+
+  // Simulate email confirmation via callback
+  console.log('   Simulating email confirmation for christian@otter.systems...');
+  await page.goto('http://localhost:3000/auth/callback?simulate_confirm_email=christian@otter.systems');
   await page.waitForURL('http://localhost:3000/', { timeout: 10000 });
-  console.log('   ✓ Bootstrap Super Admin auto-approved and landed on Home (/)');
+  console.log('   ✓ Bootstrap Super Admin auto-approved AFTER email confirmation and landed on Home (/)');
+
+  // Confirm regular member email as well via standalone fetch so browser cookie is untouched
+  await fetch('http://localhost:3000/auth/callback?simulate_confirm_email=marcus@otter.systems');
 
   // 7. Test Super Admin Approving Pending Member in /admin/pending
   console.log('7. Testing Super Admin reviewing and approving pending member...');
   await page.goto('http://localhost:3000/admin/pending');
   await page.waitForSelector('text=Marcus Vance', { timeout: 5000 });
   console.log('   ✓ Marcus Vance visible in pending list');
-
-  // Screenshot Admin Pending Console
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'admin-pending-mobile.png') });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: path.join(screenshotsDir, 'admin-pending-desktop.png') });
 
   // Click "Approve & Activate"
   await page.click('button:has-text("Approve & Activate")');
@@ -126,7 +115,7 @@ async function runTests() {
   console.log('   ✓ Marcus Vance verified on Team roster');
 
   // 9. Test Rate Limiting on Login
-  console.log('9. Testing server-side rate limiting on login endpoint...');
+  console.log('9. Testing server-side persistent rate limiting on login endpoint...');
   let hitRateLimit = false;
   for (let i = 0; i < 12; i++) {
     const res = await page.request.post('http://localhost:3000/api/auth/login', {
@@ -134,7 +123,7 @@ async function runTests() {
     });
     if (res.status() === 429) {
       hitRateLimit = true;
-      console.log(`   ✓ Rate limit triggered on attempt ${i + 1} with status 429`);
+      console.log(`   ✓ Persistent rate limit triggered on attempt ${i + 1} with status 429`);
       break;
     }
   }

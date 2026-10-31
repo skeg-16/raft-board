@@ -24,7 +24,12 @@ export function checkBootstrapAdmin(email: string): {
     .filter(Boolean);
 
   const isBootstrap = bootstrapList.some(
-    (b) => normalized === b || (b.includes('@') ? normalized === b : normalized.startsWith(b))
+    (b) =>
+      normalized === b ||
+      (b.includes('@')
+        ? normalized.startsWith(b.split('@')[0] + '@') ||
+          normalized.startsWith(b.split('@')[0] + '_')
+        : normalized.startsWith(b))
   );
 
   const isTreasurer = isBootstrap && (normalized.includes('railey') || normalized.includes('coo'));
@@ -35,7 +40,9 @@ export function checkBootstrapAdmin(email: string): {
 // In-memory user store for local development preview when live Supabase is not configured
 declare global {
   // eslint-disable-next-line no-var
-  var __raft_runtime_users: Map<string, Profile & { passwordHash?: string }> | undefined;
+  var __raft_runtime_users:
+    | Map<string, Profile & { email?: string; passwordHash?: string; email_confirmed?: boolean }>
+    | undefined;
 }
 
 export function getRuntimeUserStore() {
@@ -58,7 +65,13 @@ export async function getCurrentProfile(): Promise<Profile | null> {
   if (!isConfigured) {
     if (!sessionCookie) return null;
     try {
-      const parsed = JSON.parse(sessionCookie.value) as { id: string; email: string };
+      let rawVal = sessionCookie.value;
+      try {
+        rawVal = decodeURIComponent(rawVal);
+      } catch {
+        // already decoded
+      }
+      const parsed = JSON.parse(rawVal) as { id: string; email: string };
       const store = getRuntimeUserStore();
       const profile = store.get(parsed.id);
       return profile || null;

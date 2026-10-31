@@ -3,12 +3,13 @@ import { cookies } from 'next/headers';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { checkBootstrapAdmin, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
-import type { Profile, RoleType } from '@/types/database';
+import type { Profile } from '@/types/database';
 
 export async function POST(request: Request) {
   try {
     const ip = getClientIp(request);
-    const rateLimit = checkRateLimit(ip, 'signup');
+    // Persistent rate limit check
+    const rateLimit = await checkRateLimit(ip, 'signup');
 
     if (!rateLimit.success) {
       return NextResponse.json(
@@ -50,13 +51,15 @@ export async function POST(request: Request) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const { isBootstrap, isTreasurer } = checkBootstrapAdmin(normalizedEmail);
+    const { isBootstrap } = checkBootstrapAdmin(normalizedEmail);
 
-    const initialStatus = isBootstrap ? 'active' : 'pending';
-    const isSuperAdmin = isBootstrap;
-    const isExecutive = isBootstrap;
-    const roleType: RoleType | null = isBootstrap ? 'executive' : null;
-    const roleTitle = isBootstrap ? desired_role_title : null;
+    // RULE 1: All signups start as "pending". NO auto-approval at sign-up time, even for bootstrap admins.
+    // Bootstrap admin auto-approval happens strictly AFTER email confirmation.
+    const initialStatus = 'pending';
+    const isSuperAdmin = false;
+    const isTreasurer = false;
+    const roleType = null;
+    const roleTitle = null;
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const isConfigured =
@@ -68,14 +71,15 @@ export async function POST(request: Request) {
     if (isConfigured) {
       const adminClient = createAdminClient();
 
-      // Create Supabase Auth user
+      // Create Supabase Auth user with email_confirm: false so Supabase sends verification email
       const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
         email: normalizedEmail,
         password,
-        email_confirm: isBootstrap, // Auto-confirm bootstrap admins; regular users follow email confirmation
+        email_confirm: false, // Email confirmation is strictly required!
         user_metadata: {
           full_name,
           desired_role_title,
+          is_bootstrap_candidate: isBootstrap,
         },
       });
 
@@ -86,7 +90,7 @@ export async function POST(request: Request) {
         );
       }
 
-      // Insert profile
+      // Insert profile with status = 'pending'
       const { error: profileError } = await (adminClient.from('profiles') as any).upsert({
         id: authData.user.id,
         full_name,
@@ -97,7 +101,7 @@ export async function POST(request: Request) {
         is_super_admin: isSuperAdmin,
         is_treasurer: isTreasurer,
         weekly_target_xp: 80,
-        active: initialStatus === 'active',
+        active: false,
         must_change_password: false,
       });
 
@@ -107,18 +111,19 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         success: true,
-        status: initialStatus,
+        status: 'pending',
         isBootstrap,
-        message: isBootstrap
-          ? 'Bootstrap Super Admin registered and activated!'
-          : 'Account created! Please check your email to confirm, then wait for admin approval.',
+        message:
+          'Account created! Please check your email to confirm your address. Once confirmed, ' +
+          (isBootstrap
+            ? 'your bootstrap Super Admin access will activate.'
+            : 'a Super Admin will review your join request.'),
       });
     }
 
-    // Local / Test In-Memory Mode
+    // Local / Test Runtime Fallback Mode
     const store = getRuntimeUserStore();
 
-    // Check existing email
     for (const u of store.values()) {
       if ((u as any).email === normalizedEmail) {
         return NextResponse.json(
@@ -129,32 +134,40 @@ export async function POST(request: Request) {
     }
 
     const userId = crypto.randomUUID();
-    const newProfile: Profile & { email: string; passwordHash: string } = {
+    const newProfile: Profile & { email: string; passwordHash: string; email_confirmed: boolean } = {
       id: userId,
       email: normalizedEmail,
       full_name,
       role_title: roleTitle,
       role_type: roleType,
       requested_role_title: desired_role_title,
-      status: initialStatus,
-      is_super_admin: isSuperAdmin,
-      is_treasurer: isTreasurer,
+      status: 'pending', // Always pending at signup!
+      is_super_admin: false,
+      is_treasurer: false,
       weekly_target_xp: 80,
       avatar: null,
-      active: initialStatus === 'active',
+      active: false,
       must_change_password: false,
-      passwordHash: password, // In test mode
+      passwordHash: password,
+      email_confirmed: false, // Starts unconfirmed
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     store.set(userId, newProfile);
 
-    // Set active session cookie
-    const cookieStore = await cookies();
-    cookieStore.set(
+    // Set unconfirmed pending session
+    const res = NextResponse.json({
+      success: true,
+      status: 'pending',
+      isBootstrap,
+      message:
+        'Account created! Please confirm your email address. Bootstrap auto-approval will trigger only after confirmation.',
+    });
+
+    res.cookies.set(
       'raft_user_session',
-      JSON.stringify({ id: userId, email: normalizedEmail, status: initialStatus }),
+      JSON.stringify({ id: userId, email: normalizedEmail, status: 'pending', email_confirmed: false }),
       {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -164,14 +177,7 @@ export async function POST(request: Request) {
       }
     );
 
-    return NextResponse.json({
-      success: true,
-      status: initialStatus,
-      isBootstrap,
-      message: isBootstrap
-        ? 'Bootstrap Super Admin registered and activated!'
-        : 'Account created and waiting for approval.',
-    });
+    return res;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Sign up failed';
     return NextResponse.json({ error: message }, { status: 500 });
