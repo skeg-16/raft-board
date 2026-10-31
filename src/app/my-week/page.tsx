@@ -351,6 +351,26 @@ export default function MyWeekPage() {
         />
       )}
 
+      {/* Prominent "Week is locked" banner when cutoff has passed */}
+      {isCutoffPassed && (
+        <div className="rounded-3xl bg-rose-50 border-2 border-rose-200 p-4 shadow-sm flex items-start gap-3.5 text-rose-950 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="w-9 h-9 rounded-2xl bg-rose-100 border border-rose-200 flex items-center justify-center shrink-0 text-rose-600 shadow-xs">
+            <AlertCircle className="w-5 h-5 text-rose-600" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-sm font-extrabold text-rose-950 font-display flex items-center gap-2">
+              Week is locked
+              <span className="px-2 py-0.5 rounded-full bg-rose-200/80 text-rose-800 text-[10px] font-bold uppercase tracking-wider">
+                Cutoff Passed
+              </span>
+            </h2>
+            <p className="text-xs text-rose-800/90 leading-relaxed">
+              The cutoff for this week was <strong className="text-rose-950 font-semibold">{settings?.meeting_weekday} at {settings?.meeting_time} ({settings?.timezone})</strong>. Tasks for this week are locked and can no longer be finished, undone, or modified. Any unfinished tasks will roll over to next week.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Week Cadence & Cutoff Banner */}
       <div className="rounded-3xl bg-gradient-to-br from-slate-900 via-sky-950 to-slate-900 text-white p-4 shadow-lg border border-sky-900/40 space-y-3">
         <div className="flex items-start justify-between gap-2">

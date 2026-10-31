@@ -134,6 +134,15 @@ function getStores() {
   };
 }
 
+let inMemorySettings: Settings = {
+  id: 1,
+  meeting_weekday: 'Saturday',
+  meeting_time: '10:00 AM',
+  timezone: 'Asia/Manila',
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
 // Read settings exclusively from the database
 export async function getSettings(): Promise<Settings> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -149,14 +158,67 @@ export async function getSettings(): Promise<Settings> {
   }
 
   // Fallback default meeting settings (Saturday 10:00 AM Asia/Manila)
-  return {
-    id: 1,
-    meeting_weekday: 'Saturday',
-    meeting_time: '10:00 AM',
-    timezone: 'Asia/Manila',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+  return inMemorySettings;
+}
+
+// Parse meeting time string (e.g. '10:00', '10:00 AM', '14:30', '2:30 PM')
+export function parseMeetingTime(timeStr?: string): { hour: number; minute: number } {
+  if (!timeStr) return { hour: 10, minute: 0 };
+  const upper = timeStr.trim().toUpperCase();
+  const isPM = upper.includes('PM');
+  const clean = upper.replace('AM', '').replace('PM', '').trim();
+  const parts = clean.split(':');
+  let hour = parseInt(parts[0], 10);
+  const minute = parts[1] ? parseInt(parts[1], 10) : 0;
+  if (isNaN(hour)) hour = 10;
+  if (isPM && hour < 12) hour += 12;
+  else if (!isPM && hour === 12 && upper.includes('AM')) hour = 0;
+  return { hour, minute: isNaN(minute) ? 0 : minute };
+}
+
+// Update system settings (Super Admins only)
+// Immediately updates current open week cutoff so it follows new meeting time with zero cron schedule change
+export async function updateSystemSettings(updates: Partial<Settings>): Promise<{ settings: Settings; currentWeek: Week }> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  let updatedSettings: Settings;
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data, error } = await (admin.from('settings') as any)
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', 1)
+      .select('*')
+      .single();
+
+    if (error) throw new Error(error.message);
+    updatedSettings = data as unknown as Settings;
+  } else {
+    inMemorySettings = {
+      ...inMemorySettings,
+      ...updates,
+      updated_at: new Date().toISOString(),
+    };
+    updatedSettings = inMemorySettings;
+  }
+
+  // Update cutoff_at for currently open week
+  const { cutoffAt: newCutoff, startAt: newStart } = deriveWeekBoundaries(updatedSettings);
+  const currentWeek = await getCurrentWeek();
+  currentWeek.cutoff_at = newCutoff.toISOString();
+  currentWeek.start_at = newStart.toISOString();
+
+  const { weeks } = getStores();
+  weeks.set(currentWeek.id, currentWeek);
+
+  return { settings: updatedSettings, currentWeek };
 }
 
 // Calculate Week boundaries strictly based on database settings
@@ -179,17 +241,21 @@ export function deriveWeekBoundaries(settings: Settings, refDate = new Date()): 
   let startMonth = localNow.getUTCMonth();
   let startDate = localNow.getUTCDate();
 
-  // If Saturday and past 10:00 AM, week started today at 10:00 AM
-  // If Saturday before 10:00 AM, week started last Saturday at 10:00 AM
-  // If Sunday (0) to Friday (5), week started last Saturday at 10:00 AM
+  const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(settings.meeting_time);
+
   let daysSinceSaturday = (dayOfWeek + 1) % 7;
-  if (dayOfWeek === 6 && (currentHour > 10 || (currentHour === 10 && currentMinute >= 0))) {
+  const isPastMeetingTimeToday =
+    currentHour > meetingHour || (currentHour === meetingHour && currentMinute >= meetingMinute);
+
+  if (dayOfWeek === 6 && isPastMeetingTimeToday) {
     daysSinceSaturday = 0;
   } else if (dayOfWeek === 6) {
     daysSinceSaturday = 7;
   }
 
-  const startLocal = new Date(Date.UTC(startYear, startMonth, startDate - daysSinceSaturday, 10, 0, 0));
+  const startLocal = new Date(
+    Date.UTC(startYear, startMonth, startDate - daysSinceSaturday, meetingHour, meetingMinute, 0)
+  );
   const cutoffLocal = new Date(startLocal.getTime() + 7 * 24 * 60 * 60 * 1000);
 
   // Convert back to UTC for storage
@@ -244,7 +310,15 @@ export async function getCurrentWeek(): Promise<Week> {
   // Local store fallback
   const { weeks } = getStores();
   for (const w of weeks.values()) {
-    if (w.is_current) return w;
+    if (w.is_current) {
+      // Ensure open week's cutoff dynamically reflects latest settings
+      const { cutoffAt: latestCutoff } = deriveWeekBoundaries(settings);
+      if (w.cutoff_at !== latestCutoff.toISOString()) {
+        w.cutoff_at = latestCutoff.toISOString();
+        weeks.set(w.id, w);
+      }
+      return w;
+    }
   }
   for (const w of weeks.values()) {
     if (w.year === year && w.week_number === weekNumber) return w;
@@ -1419,7 +1493,8 @@ export async function getMonthlySeasonLeaderboard(
 // Database-level locking (Postgres advisory lock / row-level lock) guarantees concurrency safety across serverless instances without in-memory locks.
 export async function closeWeek(
   weekId?: string,
-  triggeredBySuperAdmin = false
+  triggeredBySuperAdmin = false,
+  simulatedNow?: string | Date
 ): Promise<{
   success: boolean;
   alreadyClosed?: boolean;
@@ -1431,12 +1506,13 @@ export async function closeWeek(
   topOtterUserId?: string;
   message: string;
 }> {
-  return await executeCloseWeek(weekId, triggeredBySuperAdmin);
+  return await executeCloseWeek(weekId, triggeredBySuperAdmin, simulatedNow);
 }
 
 async function executeCloseWeek(
   weekId?: string,
-  triggeredBySuperAdmin = false
+  triggeredBySuperAdmin = false,
+  simulatedNow?: string | Date
 ): Promise<{
   success: boolean;
   alreadyClosed?: boolean;
@@ -1472,13 +1548,23 @@ async function executeCloseWeek(
   if (weekId) {
     targetWeek = weeks.get(weekId);
   } else {
-    // Catch-up check: look for unclosed current week where cutoff passed (or super admin trigger)
+    // Fast-exit check: must exit immediately unless Saturday cutoff has passed AND current week is still open
+    let currentOpenWeek: Week | undefined;
     for (const w of weeks.values()) {
-      if (w.is_current && (triggeredBySuperAdmin || new Date() >= new Date(w.cutoff_at))) {
-        targetWeek = w;
+      if (w.is_current) {
+        currentOpenWeek = w;
         break;
       }
     }
+
+    const checkNow = simulatedNow ? new Date(simulatedNow) : new Date();
+    if (!currentOpenWeek || (!triggeredBySuperAdmin && checkNow < new Date(currentOpenWeek.cutoff_at))) {
+      return {
+        success: true,
+        message: 'No pending weeks require closing at this time.',
+      };
+    }
+    targetWeek = currentOpenWeek;
   }
 
   if (!targetWeek) {

@@ -27,7 +27,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await closeWeek(body.weekId, true);
+    const isSuperAdminTriggered = !isCronAuth && isSuperAdmin && body.force !== false;
+    const result = await closeWeek(body.weekId, isSuperAdminTriggered, body.simulatedNow);
     return NextResponse.json(result);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to close week.';
