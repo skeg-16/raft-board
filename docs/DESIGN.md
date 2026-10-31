@@ -116,3 +116,27 @@ The aesthetic is **fresh, playful, high-velocity, and distinctly maritime/aquati
 5. **Auth Card & Password Reset Screen**:
    - Clean, centered on desktop, edge-to-edge friendly on mobile
    - Clear error notifications and password change enforcement
+
+---
+
+## 6. Component Specifications (Phase 2 Progress Game)
+
+1. **Task Card**:
+   - Category tags: color-coded border & background (Platforms: Indigo, Marketing: Pink, Clients: Emerald, Operations: Sky, Growth: Purple, Other: Slate)
+   - Size badge: Small (10 XP), Medium (30 XP), Big (50 XP)
+   - Action buttons: "I'm doing" (sky-tinted pill), "🪨 Blocked" (amber pill), "I finished" (emerald green with checkmark)
+   - "Stuck on a rock" banner: Amber alert container with pebble/rock icon and member note
+   - Undo button: Soft slate pill available before Saturday cutoff
+
+2. **Quick Picks Shelf**:
+   - Tap-to-add cards for frequent startup tasks ("update Otter Org", "update Ottermart", "post on socials", etc.)
+   - Category tag and default size indicator
+
+3. **Level & XP Progress**:
+   - Level hierarchy: Pup (0 XP), Paddler (150 XP), Swimmer (450 XP), Diver (900 XP), Raft Leader (1,500 XP), Keystone (2,500 XP)
+   - Progress bar: Gradient transition from river sky to otter amber
+   - `LevelCelebration` modal: Confetti & bouncing trophy celebration when ranking up
+
+4. **Weekly Rhythm & Rest Mode**:
+   - Countdown to Saturday meeting cutoff read strictly from database settings
+   - Rest Mode badge: Purple palm tree pill, freezes streaks and waives target (max 2/month)
