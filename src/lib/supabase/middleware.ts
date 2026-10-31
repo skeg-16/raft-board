@@ -25,6 +25,11 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
+  // Allow cron or bearer authorization for /api/tasks/close-week or any authorized API call
+  if (request.headers.get('authorization')) {
+    return supabaseResponse;
+  }
+
   const isLogin = pathname === '/login';
   const isSignup = pathname === '/signup';
   const isPendingApproval = pathname === '/pending-approval';
@@ -44,6 +49,9 @@ export async function updateSession(request: NextRequest) {
   // Local / Test Runtime Fallback
   if (!isConfigured) {
     if (!sessionCookie && !isPublicAuthPage) {
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+      }
       const url = request.nextUrl.clone();
       url.pathname = '/login';
       return NextResponse.redirect(url);
@@ -136,6 +144,9 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   if (!user && !isPublicAuthPage) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+    }
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);

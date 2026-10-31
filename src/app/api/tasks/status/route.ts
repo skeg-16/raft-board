@@ -11,7 +11,8 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json();
-  const { taskId, status, blockedNote } = body;
+  const { taskId, status, blockedNote, note } = body;
+  const actualNote = blockedNote || note;
 
   if (!taskId || !status) {
     return NextResponse.json({ error: 'taskId and status are required.' }, { status: 400 });
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
     const updateData: any = {
       status,
       is_blocked: status === 'blocked',
-      blocked_note: status === 'blocked' ? (blockedNote ? blockedNote.trim() : 'Stuck on a rock') : null,
+      blocked_note: status === 'blocked' ? (actualNote ? actualNote.trim() : 'Stuck on a rock') : null,
       updated_at: new Date().toISOString(),
     };
 
@@ -76,9 +77,11 @@ export async function POST(request: Request) {
 
   task.status = status;
   task.is_blocked = status === 'blocked';
-  task.blocked_note = status === 'blocked' ? (blockedNote ? blockedNote.trim() : 'Stuck on a rock') : null;
+  task.blocked_note = status === 'blocked' ? (actualNote ? actualNote.trim() : 'Stuck on a rock') : null;
   task.updated_at = new Date().toISOString();
   __raft_tasks.set(taskId, task);
 
   return NextResponse.json({ success: true, task });
 }
+
+export const PATCH = POST;

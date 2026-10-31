@@ -11,6 +11,8 @@ export interface Profile {
   is_super_admin: boolean;
   is_treasurer: boolean;
   weekly_target_xp: number;
+  current_streak?: number;
+  max_streak?: number;
   avatar: string | null;
   active: boolean;
   must_change_password: boolean;

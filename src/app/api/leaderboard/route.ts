@@ -9,6 +9,7 @@ export async function GET() {
   }
 
   const isExecutive = profile.role_type === 'executive' || profile.is_super_admin;
+  const isSuperAdmin = profile.is_super_admin === true;
 
   try {
     const data = await getWeeklyLeaderboard(profile.id, isExecutive);
@@ -16,6 +17,7 @@ export async function GET() {
       ...data,
       viewerRole: profile.role_type,
       isExecutive,
+      isSuperAdmin,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch leaderboard.';

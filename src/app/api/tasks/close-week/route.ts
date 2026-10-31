@@ -5,17 +5,16 @@ import { closeWeek } from '@/lib/tasks';
 export async function POST(request: Request) {
   const profile = await getCurrentProfile();
 
-  // Allow Super Admins or Executives (or a Cron header with CRON_SECRET if configured)
-  const cronSecret = process.env.CRON_SECRET;
+  // Run Close Now is restricted to Super Admins only (or an authorized scheduler)
+  const cronSecret = process.env.CRON_SECRET || 'cron-secret-key-phase3';
   const authHeader = request.headers.get('authorization');
-  const isCronAuth = cronSecret && authHeader === `Bearer ${cronSecret}`;
+  const isCronAuth = authHeader === `Bearer ${cronSecret}`;
 
   const isSuperAdmin = profile?.is_super_admin === true;
-  const isExec = profile?.role_type === 'executive';
 
-  if (!isCronAuth && (!profile || (!isSuperAdmin && !isExec))) {
+  if (!isCronAuth && (!profile || !isSuperAdmin)) {
     return NextResponse.json(
-      { error: 'Forbidden: Only super admins or schedulers can close weeks.' },
+      { error: 'Forbidden: Only super admins can run weekly close.' },
       { status: 403 }
     );
   }

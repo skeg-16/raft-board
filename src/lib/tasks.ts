@@ -266,7 +266,7 @@ export async function getCurrentWeek(): Promise<Week> {
 
 // Calculate streaks: count consecutive weeks with a finished task or rest mode
 export async function calculateUserStreak(userId: string): Promise<{ streak: number; isResting: boolean }> {
-  const { tasks, restModes, weeks } = getStores();
+  const { restModes } = getStores();
   const currentWeek = await getCurrentWeek();
 
   // Check if resting in current week
@@ -278,18 +278,11 @@ export async function calculateUserStreak(userId: string): Promise<{ streak: num
     }
   }
 
-  // Count finished tasks
-  let finishedInCurrentWeek = false;
-  for (const t of tasks.values()) {
-    if (t.user_id === userId && t.week_id === currentWeek.id && t.status === 'done') {
-      finishedInCurrentWeek = true;
-      break;
-    }
-  }
+  const userStore = getRuntimeUserStore();
+  const profile = userStore.get(userId);
+  const streak = profile?.current_streak ?? 0;
 
-  // For demonstration and test preview, return streak based on activity
-  const baseStreak = finishedInCurrentWeek ? 1 : isResting ? 1 : 0;
-  return { streak: Math.max(1, baseStreak), isResting };
+  return { streak, isResting };
 }
 
 // Calculate user's total XP and Level from non-voided events
@@ -397,7 +390,7 @@ async function executeFinishTaskAndAwardXP(
   if (!task) throw new Error('Task not found.');
 
   const week = weeks.get(task.week_id);
-  if (week && new Date() >= new Date(week.cutoff_at)) {
+  if (week && (!week.is_current || new Date() >= new Date(week.cutoff_at))) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -596,7 +589,7 @@ export async function undoTaskCompletion(
   if (!task) throw new Error('Task not found.');
 
   const week = weeks.get(task.week_id);
-  if (week && new Date() >= new Date(week.cutoff_at)) {
+  if (week && (!week.is_current || new Date() >= new Date(week.cutoff_at))) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -640,7 +633,7 @@ export async function updateTaskSize(
   if (!task) throw new Error('Task not found.');
 
   const week = weeks.get(task.week_id);
-  if (week && new Date() >= new Date(week.cutoff_at)) {
+  if (week && (!week.is_current || new Date() >= new Date(week.cutoff_at))) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -667,7 +660,7 @@ export async function deleteTask(
   if (!task) throw new Error('Task not found.');
 
   const week = weeks.get(task.week_id);
-  if (week && new Date() >= new Date(week.cutoff_at)) {
+  if (week && (!week.is_current || new Date() >= new Date(week.cutoff_at))) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -714,7 +707,7 @@ export async function toggleRestMode(
   const week = weeks.get(weekId);
   if (!week) throw new Error('Week not found.');
 
-  if (new Date() >= new Date(week.cutoff_at)) {
+  if (!week.is_current || new Date() >= new Date(week.cutoff_at)) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -1415,13 +1408,46 @@ export async function getMonthlySeasonLeaderboard(
   };
 }
 
-// 4. Close Week (Idempotent: safe to run twice, locks week, opens next week, snapshots scores)
+// Concurrency lock for weekly close
+let closeWeekLock: Promise<any> = Promise.resolve();
+
+// 4. Close Week (Idempotent: safe to run twice, locks week, opens next week, snapshots scores, rolls over tasks, updates streaks)
 export async function closeWeek(
   weekId?: string,
   triggeredBySuperAdmin = false
 ): Promise<{
   success: boolean;
   alreadyClosed?: boolean;
+  weeksClosedCount?: number;
+  weekClosed?: string;
+  nextWeekOpened?: string;
+  monthClosed?: boolean;
+  monthYear?: string;
+  topOtterUserId?: string;
+  message: string;
+}> {
+  // Concurrency lock: serialize simultaneous calls
+  const prevLock = closeWeekLock;
+  let release: () => void;
+  closeWeekLock = new Promise<void>((res) => {
+    release = res;
+  });
+
+  await prevLock;
+  try {
+    return await executeCloseWeek(weekId, triggeredBySuperAdmin);
+  } finally {
+    release!();
+  }
+}
+
+async function executeCloseWeek(
+  weekId?: string,
+  triggeredBySuperAdmin = false
+): Promise<{
+  success: boolean;
+  alreadyClosed?: boolean;
+  weeksClosedCount?: number;
   weekClosed?: string;
   nextWeekOpened?: string;
   monthClosed?: boolean;
@@ -1447,12 +1473,13 @@ export async function closeWeek(
   // Local in-memory transaction implementation
   const { weeks, tasks, xpEvents, restModes, weekScores, monthScores } = getStores();
   const profiles = await getActiveProfiles();
+  const userStore = getRuntimeUserStore();
 
   let targetWeek: Week | undefined;
   if (weekId) {
     targetWeek = weeks.get(weekId);
   } else {
-    // Current active week where cutoff has passed (or if super admin manually triggers)
+    // Catch-up check: look for unclosed current week where cutoff passed (or super admin trigger)
     for (const w of weeks.values()) {
       if (w.is_current && (triggeredBySuperAdmin || new Date() >= new Date(w.cutoff_at))) {
         targetWeek = w;
@@ -1479,7 +1506,7 @@ export async function closeWeek(
     };
   }
 
-  // 1. Snapshot scores for active members
+  // 1. Snapshot scores for active members and update streaks
   for (const profile of profiles) {
     const isResting = Array.from(restModes.values()).some(
       (r) => r.user_id === profile.id && r.week_id === targetWeek!.id
@@ -1501,10 +1528,16 @@ export async function closeWeek(
     }
 
     let tasksFinished = 0;
+    let finishedBeforeCutoff = 0;
     let firstUpdateAt: string | null = null;
     for (const t of tasks.values()) {
       if (t.user_id === profile.id && t.week_id === targetWeek!.id) {
-        if (t.status === 'done') tasksFinished++;
+        if (t.status === 'done') {
+          tasksFinished++;
+          if (t.finished_at && new Date(t.finished_at) < new Date(targetWeek!.cutoff_at)) {
+            finishedBeforeCutoff++;
+          }
+        }
         if (!firstUpdateAt || new Date(t.created_at) < new Date(firstUpdateAt)) {
           firstUpdateAt = t.created_at;
         }
@@ -1528,9 +1561,30 @@ export async function closeWeek(
       rank: null,
       created_at: new Date().toISOString(),
     });
+
+    // Update Streaks:
+    // +1 for finish before cutoff, frozen during Rest Mode, reset after missed normal week
+    const runtimeUser = userStore.get(profile.id);
+    if (runtimeUser) {
+      if (isResting) {
+        // Streak is frozen (unaltered)
+      } else if (finishedBeforeCutoff > 0) {
+        const currentStreak = (runtimeUser.current_streak || 0) + 1;
+        runtimeUser.current_streak = currentStreak;
+        runtimeUser.max_streak = Math.max(runtimeUser.max_streak || 0, currentStreak);
+      } else {
+        // Missed normal week: reset streak
+        runtimeUser.current_streak = 0;
+      }
+      userStore.set(profile.id, runtimeUser);
+    }
   }
 
-  // Rank non-resting members using tie-breakers
+  // Rank non-resting members using verified tie-breakers:
+  // 1) score DESC
+  // 2) tasks_finished DESC
+  // 3) first_update_at ASC (earliest)
+  // 4) full_name ASC (alphabetical)
   const weekMemberList = Array.from(weekScores.values())
     .filter((ws) => ws.week_id === targetWeek!.id && !ws.resting)
     .sort((a, b) => {
@@ -1570,7 +1624,35 @@ export async function closeWeek(
   };
   weeks.set(nextWeekId, nextWeek);
 
-  // 4. Month Close Detection (Asia/Manila calendar month)
+  // 4. ROLL OVER UNFINISHED TASKS TO NEXT WEEK:
+  // Unfinished tasks ('todo', 'doing', 'blocked') roll over as unfinished to nextWeek
+  for (const t of Array.from(tasks.values())) {
+    if (t.week_id === targetWeek.id && t.status !== 'done') {
+      const rolloverId = `rollover-${t.id}-${nextWeek.id}`;
+      if (!tasks.has(rolloverId)) {
+        tasks.set(rolloverId, {
+          id: rolloverId,
+          week_id: nextWeek.id,
+          user_id: t.user_id,
+          title: t.title,
+          category: t.category,
+          size: t.size,
+          source: t.source,
+          status: t.status, // preserves 'todo', 'doing', or 'blocked'
+          note: t.note,
+          link: t.link,
+          is_blocked: t.is_blocked,
+          blocked_note: t.blocked_note,
+          finished_at: null,
+          created_by: t.created_by,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // 5. Month Close Detection (Asia/Manila calendar month)
   const tzOffset = 8 * 60 * 60 * 1000;
   const closedCutoffManila = new Date(new Date(targetWeek.cutoff_at).getTime() + tzOffset);
   const monthYear = `${closedCutoffManila.getUTCFullYear()}-${String(closedCutoffManila.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -1596,6 +1678,6 @@ export async function closeWeek(
     monthClosed,
     monthYear,
     topOtterUserId,
-    message: 'Week closed successfully. Scores snapshotted, ranks assigned, and next week opened.',
+    message: 'Week closed successfully. Scores snapshotted, ranks assigned, streaks updated, and unfinished tasks rolled over.',
   };
 }

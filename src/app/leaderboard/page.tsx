@@ -120,6 +120,7 @@ export default function LeaderboardPage() {
   };
 
   const isExecutive = weeklyData?.isExecutive === true;
+  const isSuperAdmin = (weeklyData as any)?.isSuperAdmin === true;
 
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-5 pb-28">
@@ -139,8 +140,8 @@ export default function LeaderboardPage() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* Super Admin manual trigger */}
-          {isExecutive && (
+          {/* Super Admin manual trigger: only super admins can run close */}
+          {isSuperAdmin && (
             <button
               onClick={handleManualClose}
               disabled={closingWeek}
