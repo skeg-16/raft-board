@@ -98,6 +98,57 @@ export interface RestMode {
   created_at: string;
 }
 
+export interface WeekScore {
+  id: string;
+  user_id: string;
+  week_id: string;
+  task_xp: number;
+  target_snapshot: number;
+  score: number | null; // percentage (0.00 to 120.00), null for resting
+  resting: boolean;
+  tasks_finished: number;
+  first_update_at: string | null;
+  rank: number | null;
+  created_at: string;
+  profile?: Profile;
+}
+
+export interface MonthScore {
+  id: string;
+  user_id: string;
+  month_year: string;
+  average_score: number | null;
+  weeks_participated: number;
+  weeks_rested: number;
+  total_tasks_finished: number;
+  earliest_update: string | null;
+  rank: number | null;
+  is_top_otter: boolean;
+  created_at: string;
+  profile?: Profile;
+}
+
+export interface TeamMemberProgress {
+  profile: Profile;
+  levelInfo: LevelInfo;
+  hasUpdatedThisWeek: boolean;
+  isResting: boolean;
+  tasksCount: {
+    total: number;
+    todo: number;
+    doing: number;
+    blocked: number;
+    done: number;
+  };
+  blockedTasks: {
+    id: string;
+    title: string;
+    category: TaskCategory;
+    note: string | null;
+  }[];
+  weekTaskXP: number;
+}
+
 export type OtterLevel =
   | 'Pup'
   | 'Paddler'

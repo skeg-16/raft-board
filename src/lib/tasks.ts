@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { getRuntimeUserStore } from '@/lib/auth';
 import type {
   Settings,
   Week,
@@ -13,6 +14,10 @@ import type {
   TaskSize,
   TaskStatus,
   TaskSource,
+  Profile,
+  WeekScore,
+  MonthScore,
+  TeamMemberProgress,
 } from '@/types/database';
 
 export const LEVEL_THRESHOLDS: { level: OtterLevel; minXP: number }[] = [
@@ -93,6 +98,10 @@ declare global {
   var __raft_xp_events: Map<string, XPEvent> | undefined;
   // eslint-disable-next-line no-var
   var __raft_rest_modes: Map<string, RestMode> | undefined;
+  // eslint-disable-next-line no-var
+  var __raft_week_scores: Map<string, WeekScore> | undefined;
+  // eslint-disable-next-line no-var
+  var __raft_month_scores: Map<string, MonthScore> | undefined;
 }
 
 function getStores() {
@@ -111,6 +120,8 @@ function getStores() {
   }
   if (!globalThis.__raft_xp_events) globalThis.__raft_xp_events = new Map();
   if (!globalThis.__raft_rest_modes) globalThis.__raft_rest_modes = new Map();
+  if (!globalThis.__raft_week_scores) globalThis.__raft_week_scores = new Map();
+  if (!globalThis.__raft_month_scores) globalThis.__raft_month_scores = new Map();
 
   return {
     weeks: globalThis.__raft_weeks,
@@ -118,6 +129,8 @@ function getStores() {
     quickPicks: globalThis.__raft_quick_picks,
     xpEvents: globalThis.__raft_xp_events,
     restModes: globalThis.__raft_rest_modes,
+    weekScores: globalThis.__raft_week_scores,
+    monthScores: globalThis.__raft_month_scores,
   };
 }
 
@@ -230,6 +243,9 @@ export async function getCurrentWeek(): Promise<Week> {
 
   // Local store fallback
   const { weeks } = getStores();
+  for (const w of weeks.values()) {
+    if (w.is_current) return w;
+  }
   for (const w of weeks.values()) {
     if (w.year === year && w.week_number === weekNumber) return w;
   }
@@ -748,5 +764,838 @@ export async function toggleRestMode(
     success: true,
     resting: true,
     message: 'Rest mode activated. Weekly target waived and streak frozen.',
+  };
+}
+
+// ==============================================================================
+// Phase 3: Team Dashboard, Leaderboard & Weekly Close
+// ==============================================================================
+
+// Helper to get all active profiles
+async function getActiveProfiles(): Promise<Profile[]> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('status', 'active')
+      .order('full_name', { ascending: true });
+    return (data as Profile[]) || [];
+  }
+
+  const userStore = getRuntimeUserStore();
+  return Array.from(userStore.values()).filter((p) => p.status === 'active');
+}
+
+// 1. Get Team Progress for current week
+export async function getTeamProgress(): Promise<{
+  currentWeek: Week;
+  members: TeamMemberProgress[];
+  summary: {
+    totalActiveMembers: number;
+    updatedCount: number;
+    notYetCount: number;
+    restingCount: number;
+    totalTasks: number;
+    doneTasks: number;
+    doingTasks: number;
+    blockedTasks: number;
+    todoTasks: number;
+    teamTotalTaskXP: number;
+    teamTotalTargetXP: number;
+    completionPercent: number;
+  };
+}> {
+  const currentWeek = await getCurrentWeek();
+  const profiles = await getActiveProfiles();
+  const { tasks, restModes, xpEvents } = getStores();
+
+  const isCutoffPassed = new Date() >= new Date(currentWeek.cutoff_at);
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  let allTasks: Task[] = [];
+  let allRestModes: RestMode[] = [];
+  let allXPEvents: XPEvent[] = [];
+
+  if (isConfigured) {
+    const supabase = await createClient();
+    const { data: tData } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('week_id', currentWeek.id);
+    allTasks = (tData as Task[]) || [];
+
+    const { data: rData } = await supabase
+      .from('rest_mode')
+      .select('*')
+      .eq('week_id', currentWeek.id);
+    allRestModes = (rData as RestMode[]) || [];
+
+    const { data: eData } = await supabase
+      .from('xp_events')
+      .select('*')
+      .eq('week_id', currentWeek.id)
+      .eq('voided', false);
+    allXPEvents = (eData as XPEvent[]) || [];
+  } else {
+    allTasks = Array.from(tasks.values()).filter((t) => t.week_id === currentWeek.id);
+    allRestModes = Array.from(restModes.values()).filter((r) => r.week_id === currentWeek.id);
+    allXPEvents = Array.from(xpEvents.values()).filter(
+      (ev) => ev.week_id === currentWeek.id && !ev.voided
+    );
+  }
+
+  let totalTasks = 0;
+  let doneTasks = 0;
+  let doingTasks = 0;
+  let blockedTasks = 0;
+  let todoTasks = 0;
+  let teamTotalTaskXP = 0;
+  let teamTotalTargetXP = 0;
+  let updatedCount = 0;
+  let restingCount = 0;
+
+  const memberProgressList: TeamMemberProgress[] = [];
+
+  for (const profile of profiles) {
+    const memberTasks = allTasks.filter((t) => t.user_id === profile.id);
+    const isResting = allRestModes.some((r) => r.user_id === profile.id);
+    if (isResting) restingCount++;
+
+    // "Updated" means the member moved a task off todo (doing, done, blocked),
+    // added an Extra, or turned on Rest Mode this week
+    const hasMovedOffTodo = memberTasks.some((t) => t.status !== 'todo');
+    const hasAddedExtra = memberTasks.some((t) => t.source === 'extra');
+    const hasUpdatedThisWeek = isResting || hasMovedOffTodo || hasAddedExtra;
+
+    if (hasUpdatedThisWeek) updatedCount++;
+
+    const memberTaskXP = allXPEvents
+      .filter((ev) => ev.user_id === profile.id && ev.reason === 'task_completion')
+      .reduce((sum, ev) => sum + ev.amount, 0);
+
+    teamTotalTaskXP += memberTaskXP;
+    teamTotalTargetXP += profile.weekly_target_xp || 80;
+
+    const memberBlocked = memberTasks
+      .filter((t) => t.status === 'blocked')
+      .map((t) => ({
+        id: t.id,
+        title: t.title,
+        category: t.category,
+        note: t.blocked_note || t.note || 'Stuck on a rock',
+      }));
+
+    const counts = {
+      total: memberTasks.length,
+      todo: memberTasks.filter((t) => t.status === 'todo').length,
+      doing: memberTasks.filter((t) => t.status === 'doing').length,
+      blocked: memberTasks.filter((t) => t.status === 'blocked').length,
+      done: memberTasks.filter((t) => t.status === 'done').length,
+    };
+
+    totalTasks += counts.total;
+    doneTasks += counts.done;
+    doingTasks += counts.doing;
+    blockedTasks += counts.blocked;
+    todoTasks += counts.todo;
+
+    const levelInfo = await getUserLevelAndXP(profile.id);
+
+    memberProgressList.push({
+      profile,
+      levelInfo,
+      hasUpdatedThisWeek,
+      isResting,
+      tasksCount: counts,
+      blockedTasks: memberBlocked,
+      weekTaskXP: memberTaskXP,
+    });
+  }
+
+  const completionPercent =
+    teamTotalTargetXP > 0
+      ? Math.min(120, Math.round((teamTotalTaskXP / teamTotalTargetXP) * 100))
+      : 0;
+
+  return {
+    currentWeek,
+    members: memberProgressList,
+    summary: {
+      totalActiveMembers: profiles.length,
+      updatedCount,
+      notYetCount: profiles.length - updatedCount,
+      restingCount,
+      totalTasks,
+      doneTasks,
+      doingTasks,
+      blockedTasks,
+      todoTasks,
+      teamTotalTaskXP,
+      teamTotalTargetXP,
+      completionPercent,
+    },
+  };
+}
+
+// 2. Get Weekly Leaderboard (Enforces Top 3 for everyone, own rank for leads, full stats for executives)
+export async function getWeeklyLeaderboard(
+  currentUserId: string,
+  isExecutive: boolean,
+  weekId?: string
+): Promise<{
+  week: Week;
+  top3: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+    rank: number;
+    score: number;
+    tasksFinished: number;
+  }>;
+  currentUserEntry: {
+    userId: string;
+    fullName: string;
+    rank: number | null;
+    score: number | null;
+    taskXP: number;
+    targetSnapshot: number;
+    tasksFinished: number;
+    isResting: boolean;
+  } | null;
+  restingMembers: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+  }>;
+  allMembers?: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+    rank: number | null;
+    score: number | null;
+    taskXP: number;
+    targetSnapshot: number;
+    tasksFinished: number;
+    isResting: boolean;
+    firstUpdateAt: string | null;
+  }>;
+}> {
+  const currentWeek = weekId ? (await getWeekById(weekId)) : await getCurrentWeek();
+  const profiles = await getActiveProfiles();
+  const { tasks, restModes, xpEvents, weekScores } = getStores();
+
+  // Check if closed scores exist in store/db (only for finalized/closed weeks)
+  let scores: WeekScore[] = [];
+  const existingScores = Array.from(weekScores.values()).filter((ws) => ws.week_id === currentWeek.id);
+
+  if (!currentWeek.is_current && existingScores.length > 0) {
+    scores = existingScores;
+  } else {
+    // Derive live weekly scores
+    for (const profile of profiles) {
+      const isResting = Array.from(restModes.values()).some(
+        (r) => r.user_id === profile.id && r.week_id === currentWeek.id
+      );
+
+      const target = profile.weekly_target_xp || 80;
+
+      // Task XP only: sum of task_completion XP events (capped at 150)
+      let taskXP = 0;
+      for (const ev of xpEvents.values()) {
+        if (
+          ev.user_id === profile.id &&
+          ev.week_id === currentWeek.id &&
+          ev.reason === 'task_completion' &&
+          !ev.voided
+        ) {
+          taskXP += ev.amount;
+        }
+      }
+
+      // Tasks finished
+      let tasksFinished = 0;
+      let firstUpdateAt: string | null = null;
+      for (const t of tasks.values()) {
+        if (t.user_id === profile.id && t.week_id === currentWeek.id) {
+          if (t.status === 'done') tasksFinished++;
+          if (!firstUpdateAt || new Date(t.created_at) < new Date(firstUpdateAt)) {
+            firstUpdateAt = t.created_at;
+          }
+        }
+      }
+
+      // Score: capped at 120.00%
+      let score: number | null = null;
+      if (!isResting) {
+        score = Math.min(120, Math.round(((taskXP / target) * 100) * 100) / 100);
+      }
+
+      scores.push({
+        id: `ws-${profile.id}-${currentWeek.id}`,
+        user_id: profile.id,
+        week_id: currentWeek.id,
+        task_xp: taskXP,
+        target_snapshot: target,
+        score,
+        resting: isResting,
+        tasks_finished: tasksFinished,
+        first_update_at: firstUpdateAt,
+        rank: null,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    // Apply tie-breakers to non-resting members:
+    // 1) score DESC
+    // 2) tasks_finished DESC
+    // 3) first_update_at ASC
+    // 4) full_name ASC
+    const nonResting = scores
+      .filter((s) => !s.resting)
+      .sort((a, b) => {
+        if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
+        if (b.tasks_finished !== a.tasks_finished) return b.tasks_finished - a.tasks_finished;
+        const timeA = a.first_update_at ? new Date(a.first_update_at).getTime() : Infinity;
+        const timeB = b.first_update_at ? new Date(b.first_update_at).getTime() : Infinity;
+        if (timeA !== timeB) return timeA - timeB;
+        const nameA = profiles.find((p) => p.id === a.user_id)?.full_name || '';
+        const nameB = profiles.find((p) => p.id === b.user_id)?.full_name || '';
+        return nameA.localeCompare(nameB);
+      });
+
+    nonResting.forEach((s, idx) => {
+      s.rank = idx + 1;
+    });
+  }
+
+  // Separate resting members (never ranked last)
+  const restingScores = scores.filter((s) => s.resting);
+  const rankedScores = scores
+    .filter((s) => !s.resting)
+    .sort((a, b) => (a.rank || 999) - (b.rank || 999));
+
+  // Top 3 (visible to everyone)
+  const top3 = rankedScores.slice(0, 3).map((s) => {
+    const prof = profiles.find((p) => p.id === s.user_id);
+    return {
+      userId: s.user_id,
+      fullName: prof?.full_name || 'Otter Member',
+      roleTitle: prof?.role_title || null,
+      avatar: prof?.avatar || null,
+      rank: s.rank || 1,
+      score: s.score || 0,
+      tasksFinished: s.tasks_finished,
+    };
+  });
+
+  // Current user entry
+  const myScore = scores.find((s) => s.user_id === currentUserId);
+  const myProfile = profiles.find((p) => p.id === currentUserId);
+  const currentUserEntry = myScore
+    ? {
+        userId: myScore.user_id,
+        fullName: myProfile?.full_name || 'You',
+        rank: myScore.rank,
+        score: myScore.score,
+        taskXP: myScore.task_xp,
+        targetSnapshot: myScore.target_snapshot,
+        tasksFinished: myScore.tasks_finished,
+        isResting: myScore.resting,
+      }
+    : null;
+
+  // Resting members list
+  const restingMembers = restingScores.map((s) => {
+    const prof = profiles.find((p) => p.id === s.user_id);
+    return {
+      userId: s.user_id,
+      fullName: prof?.full_name || 'Otter Member',
+      roleTitle: prof?.role_title || null,
+      avatar: prof?.avatar || null,
+    };
+  });
+
+  // Full roster if executive
+  const allMembers = isExecutive
+    ? scores.map((s) => {
+        const prof = profiles.find((p) => p.id === s.user_id);
+        return {
+          userId: s.user_id,
+          fullName: prof?.full_name || 'Otter Member',
+          roleTitle: prof?.role_title || null,
+          avatar: prof?.avatar || null,
+          rank: s.rank,
+          score: s.score,
+          taskXP: s.task_xp,
+          targetSnapshot: s.target_snapshot,
+          tasksFinished: s.tasks_finished,
+          isResting: s.resting,
+          firstUpdateAt: s.first_update_at,
+        };
+      })
+    : undefined;
+
+  return {
+    week: currentWeek,
+    top3,
+    currentUserEntry,
+    restingMembers,
+    allMembers,
+  };
+}
+
+async function getWeekById(weekId: string): Promise<Week> {
+  const { weeks } = getStores();
+  const w = weeks.get(weekId);
+  if (w) return w;
+  return getCurrentWeek();
+}
+
+// 3. Get Monthly Season Leaderboard, Top Otter, and Member History Breakdown
+export async function getMonthlySeasonLeaderboard(
+  selectedMonth?: string
+): Promise<{
+  monthYear: string;
+  availableMonths: string[];
+  topOtter: {
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+    averageScore: number;
+    totalTasksFinished: number;
+  } | null;
+  rankings: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+    rank: number;
+    averageScore: number;
+    weeksParticipated: number;
+    weeksRested: number;
+    totalTasksFinished: number;
+    isTopOtter: boolean;
+    weeksBreakdown: Array<{
+      weekNumber: number;
+      year: number;
+      score: number | null;
+      isResting: boolean;
+      taskXP: number;
+      targetSnapshot: number;
+    }>;
+  }>;
+  restingOnlyMembers: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+  }>;
+}> {
+  const settings = await getSettings();
+  const { weeks, weekScores, monthScores } = getStores();
+  const profiles = await getActiveProfiles();
+
+  // Determine available months in Asia/Manila from weeks
+  const monthsSet = new Set<string>();
+  const tzOffset = 8 * 60 * 60 * 1000;
+
+  for (const w of weeks.values()) {
+    const manilaCutoff = new Date(new Date(w.cutoff_at).getTime() + tzOffset);
+    const mStr = `${manilaCutoff.getUTCFullYear()}-${String(manilaCutoff.getUTCMonth() + 1).padStart(2, '0')}`;
+    monthsSet.add(mStr);
+  }
+
+  // Also include current month
+  const nowManila = new Date(Date.now() + tzOffset);
+  const currentMonthStr = `${nowManila.getUTCFullYear()}-${String(nowManila.getUTCMonth() + 1).padStart(2, '0')}`;
+  monthsSet.add(currentMonthStr);
+
+  const availableMonths = Array.from(monthsSet).sort().reverse();
+  const targetMonth = selectedMonth || availableMonths[0];
+
+  // Weeks belonging to this month (based on Saturday cutoff in Asia/Manila)
+  const monthWeeks = Array.from(weeks.values()).filter((w) => {
+    const manilaCutoff = new Date(new Date(w.cutoff_at).getTime() + tzOffset);
+    const mStr = `${manilaCutoff.getUTCFullYear()}-${String(manilaCutoff.getUTCMonth() + 1).padStart(2, '0')}`;
+    return mStr === targetMonth;
+  });
+
+  const memberRankings: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+    avatar: string | null;
+    rank: number;
+    averageScore: number;
+    weeksParticipated: number;
+    weeksRested: number;
+    totalTasksFinished: number;
+    isTopOtter: boolean;
+    earliestUpdate: string | null;
+    weeksBreakdown: Array<{
+      weekNumber: number;
+      year: number;
+      score: number | null;
+      isResting: boolean;
+      taskXP: number;
+      targetSnapshot: number;
+    }>;
+  }> = [];
+
+  const restingOnlyMembers: Array<{
+    userId: string;
+    fullName: string;
+    roleTitle: string | null;
+  }> = [];
+
+  for (const profile of profiles) {
+    const memberScores: WeekScore[] = [];
+
+    for (const w of monthWeeks) {
+      const ws = Array.from(weekScores.values()).find(
+        (s) => s.user_id === profile.id && s.week_id === w.id
+      );
+      if (ws) {
+        memberScores.push(ws);
+      } else {
+        // Fallback: check live tasks for that week
+        const { tasks, restModes, xpEvents } = getStores();
+        const isResting = Array.from(restModes.values()).some(
+          (r) => r.user_id === profile.id && r.week_id === w.id
+        );
+        let taskXP = 0;
+        for (const ev of xpEvents.values()) {
+          if (
+            ev.user_id === profile.id &&
+            ev.week_id === w.id &&
+            ev.reason === 'task_completion' &&
+            !ev.voided
+          ) {
+            taskXP += ev.amount;
+          }
+        }
+        let doneCount = 0;
+        let earliest: string | null = null;
+        for (const t of tasks.values()) {
+          if (t.user_id === profile.id && t.week_id === w.id) {
+            if (t.status === 'done') doneCount++;
+            if (!earliest || new Date(t.created_at) < new Date(earliest)) earliest = t.created_at;
+          }
+        }
+        const target = profile.weekly_target_xp || 80;
+        const score = isResting ? null : Math.min(120, Math.round(((taskXP / target) * 100) * 100) / 100);
+
+        memberScores.push({
+          id: `tmp-${profile.id}-${w.id}`,
+          user_id: profile.id,
+          week_id: w.id,
+          task_xp: taskXP,
+          target_snapshot: target,
+          score,
+          resting: isResting,
+          tasks_finished: doneCount,
+          first_update_at: earliest,
+          rank: null,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Weekly breakdown
+    const weeksBreakdown = memberScores.map((s) => {
+      const w = monthWeeks.find((mw) => mw.id === s.week_id);
+      return {
+        weekNumber: w?.week_number || 1,
+        year: w?.year || 2026,
+        score: s.score,
+        isResting: s.resting,
+        taskXP: s.task_xp,
+        targetSnapshot: s.target_snapshot,
+      };
+    });
+
+    const activeWeeks = memberScores.filter((s) => !s.resting && s.score !== null);
+    const restedWeeks = memberScores.filter((s) => s.resting);
+
+    // If member rested all month, they are not ranked
+    if (activeWeeks.length === 0) {
+      if (restedWeeks.length > 0) {
+        restingOnlyMembers.push({
+          userId: profile.id,
+          fullName: profile.full_name,
+          roleTitle: profile.role_title,
+        });
+      }
+      continue;
+    }
+
+    const avgScore =
+      Math.round(
+        (activeWeeks.reduce((acc, s) => acc + (s.score || 0), 0) / activeWeeks.length) * 100
+      ) / 100;
+
+    const totalTasksFinished = memberScores.reduce((acc, s) => acc + s.tasks_finished, 0);
+
+    let earliestUpdate: string | null = null;
+    for (const s of memberScores) {
+      if (s.first_update_at) {
+        if (!earliestUpdate || new Date(s.first_update_at) < new Date(earliestUpdate)) {
+          earliestUpdate = s.first_update_at;
+        }
+      }
+    }
+
+    memberRankings.push({
+      userId: profile.id,
+      fullName: profile.full_name,
+      roleTitle: profile.role_title,
+      avatar: profile.avatar,
+      rank: 0,
+      averageScore: avgScore,
+      weeksParticipated: activeWeeks.length,
+      weeksRested: restedWeeks.length,
+      totalTasksFinished,
+      isTopOtter: false,
+      earliestUpdate,
+      weeksBreakdown,
+    });
+  }
+
+  // Monthly Tie-breakers:
+  // 1) averageScore DESC
+  // 2) totalTasksFinished DESC
+  // 3) earliestUpdate ASC
+  // 4) fullName ASC
+  memberRankings.sort((a, b) => {
+    if (b.averageScore !== a.averageScore) return b.averageScore - a.averageScore;
+    if (b.totalTasksFinished !== a.totalTasksFinished) return b.totalTasksFinished - a.totalTasksFinished;
+    const timeA = a.earliestUpdate ? new Date(a.earliestUpdate).getTime() : Infinity;
+    const timeB = b.earliestUpdate ? new Date(b.earliestUpdate).getTime() : Infinity;
+    if (timeA !== timeB) return timeA - timeB;
+    return a.fullName.localeCompare(b.fullName);
+  });
+
+  memberRankings.forEach((m, idx) => {
+    m.rank = idx + 1;
+    m.isTopOtter = idx === 0;
+  });
+
+  const topOtter = memberRankings.length > 0
+    ? {
+        userId: memberRankings[0].userId,
+        fullName: memberRankings[0].fullName,
+        roleTitle: memberRankings[0].roleTitle,
+        avatar: memberRankings[0].avatar,
+        averageScore: memberRankings[0].averageScore,
+        totalTasksFinished: memberRankings[0].totalTasksFinished,
+      }
+    : null;
+
+  return {
+    monthYear: targetMonth,
+    availableMonths,
+    topOtter,
+    rankings: memberRankings,
+    restingOnlyMembers,
+  };
+}
+
+// 4. Close Week (Idempotent: safe to run twice, locks week, opens next week, snapshots scores)
+export async function closeWeek(
+  weekId?: string,
+  triggeredBySuperAdmin = false
+): Promise<{
+  success: boolean;
+  alreadyClosed?: boolean;
+  weekClosed?: string;
+  nextWeekOpened?: string;
+  monthClosed?: boolean;
+  monthYear?: string;
+  topOtterUserId?: string;
+  message: string;
+}> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data, error } = await (admin as any).rpc('close_week', {
+      p_week_id: weekId || null,
+    });
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  // Local in-memory transaction implementation
+  const { weeks, tasks, xpEvents, restModes, weekScores, monthScores } = getStores();
+  const profiles = await getActiveProfiles();
+
+  let targetWeek: Week | undefined;
+  if (weekId) {
+    targetWeek = weeks.get(weekId);
+  } else {
+    // Current active week where cutoff has passed (or if super admin manually triggers)
+    for (const w of weeks.values()) {
+      if (w.is_current && (triggeredBySuperAdmin || new Date() >= new Date(w.cutoff_at))) {
+        targetWeek = w;
+        break;
+      }
+    }
+  }
+
+  if (!targetWeek) {
+    return {
+      success: true,
+      message: 'No pending weeks require closing at this time.',
+    };
+  }
+
+  // Idempotency check: if week is already marked not current and scores exist, return early!
+  const hasExistingWeekScores = Array.from(weekScores.values()).some((ws) => ws.week_id === targetWeek!.id);
+  if (!targetWeek.is_current && hasExistingWeekScores) {
+    return {
+      success: true,
+      alreadyClosed: true,
+      weekClosed: targetWeek.id,
+      message: 'Week was already finalized and closed.',
+    };
+  }
+
+  // 1. Snapshot scores for active members
+  for (const profile of profiles) {
+    const isResting = Array.from(restModes.values()).some(
+      (r) => r.user_id === profile.id && r.week_id === targetWeek!.id
+    );
+
+    // Snapshot target at this moment
+    const target = profile.weekly_target_xp || 80;
+
+    let taskXP = 0;
+    for (const ev of xpEvents.values()) {
+      if (
+        ev.user_id === profile.id &&
+        ev.week_id === targetWeek!.id &&
+        ev.reason === 'task_completion' &&
+        !ev.voided
+      ) {
+        taskXP += ev.amount;
+      }
+    }
+
+    let tasksFinished = 0;
+    let firstUpdateAt: string | null = null;
+    for (const t of tasks.values()) {
+      if (t.user_id === profile.id && t.week_id === targetWeek!.id) {
+        if (t.status === 'done') tasksFinished++;
+        if (!firstUpdateAt || new Date(t.created_at) < new Date(firstUpdateAt)) {
+          firstUpdateAt = t.created_at;
+        }
+      }
+    }
+
+    // Score: capped at 120.00%
+    const score = isResting ? null : Math.min(120, Math.round(((taskXP / target) * 100) * 100) / 100);
+
+    const scoreId = `ws-${profile.id}-${targetWeek.id}`;
+    weekScores.set(scoreId, {
+      id: scoreId,
+      user_id: profile.id,
+      week_id: targetWeek.id,
+      task_xp: taskXP,
+      target_snapshot: target,
+      score,
+      resting: isResting,
+      tasks_finished: tasksFinished,
+      first_update_at: firstUpdateAt,
+      rank: null,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  // Rank non-resting members using tie-breakers
+  const weekMemberList = Array.from(weekScores.values())
+    .filter((ws) => ws.week_id === targetWeek!.id && !ws.resting)
+    .sort((a, b) => {
+      if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
+      if (b.tasks_finished !== a.tasks_finished) return b.tasks_finished - a.tasks_finished;
+      const timeA = a.first_update_at ? new Date(a.first_update_at).getTime() : Infinity;
+      const timeB = b.first_update_at ? new Date(b.first_update_at).getTime() : Infinity;
+      if (timeA !== timeB) return timeA - timeB;
+      const nameA = profiles.find((p) => p.id === a.user_id)?.full_name || '';
+      const nameB = profiles.find((p) => p.id === b.user_id)?.full_name || '';
+      return nameA.localeCompare(nameB);
+    });
+
+  weekMemberList.forEach((s, idx) => {
+    s.rank = idx + 1;
+  });
+
+  // 2. Lock target week
+  targetWeek.is_current = false;
+  weeks.set(targetWeek.id, targetWeek);
+
+  // 3. Open next week
+  const nextStart = new Date(targetWeek.cutoff_at);
+  const nextCutoff = new Date(nextStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const nextYear = nextCutoff.getUTCFullYear();
+  const nextWeekNum = targetWeek.week_number + 1;
+  const nextWeekId = `week-${nextYear}-${nextWeekNum}`;
+
+  const nextWeek: Week = {
+    id: nextWeekId,
+    week_number: nextWeekNum,
+    year: nextYear,
+    start_at: nextStart.toISOString(),
+    cutoff_at: nextCutoff.toISOString(),
+    is_current: true,
+    created_at: new Date().toISOString(),
+  };
+  weeks.set(nextWeekId, nextWeek);
+
+  // 4. Month Close Detection (Asia/Manila calendar month)
+  const tzOffset = 8 * 60 * 60 * 1000;
+  const closedCutoffManila = new Date(new Date(targetWeek.cutoff_at).getTime() + tzOffset);
+  const monthYear = `${closedCutoffManila.getUTCFullYear()}-${String(closedCutoffManila.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  const nextCutoffManila = new Date(nextCutoff.getTime() + tzOffset);
+  const nextMonthYear = `${nextCutoffManila.getUTCFullYear()}-${String(nextCutoffManila.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  let monthClosed = false;
+  let topOtterUserId: string | undefined;
+
+  if (monthYear !== nextMonthYear) {
+    monthClosed = true;
+    const season = await getMonthlySeasonLeaderboard(monthYear);
+    if (season.topOtter) {
+      topOtterUserId = season.topOtter.userId;
+    }
+  }
+
+  return {
+    success: true,
+    weekClosed: targetWeek.id,
+    nextWeekOpened: nextWeek.id,
+    monthClosed,
+    monthYear,
+    topOtterUserId,
+    message: 'Week closed successfully. Scores snapshotted, ranks assigned, and next week opened.',
   };
 }

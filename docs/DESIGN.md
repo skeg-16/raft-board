@@ -140,3 +140,32 @@ The aesthetic is **fresh, playful, high-velocity, and distinctly maritime/aquati
 4. **Weekly Rhythm & Rest Mode**:
    - Countdown to Saturday meeting cutoff read strictly from database settings
    - Rest Mode badge: Purple palm tree pill, freezes streaks and waives target (max 2/month)
+
+---
+
+## 7. Component Specifications (Phase 3 Team Dashboard & Leaderboard)
+
+1. **Team Dashboard (`/team`)**:
+   - **TeamProgressChart**: Visual circular or progress bar breakdown of total team tasks (Done vs Doing vs Blocked vs Todo) and aggregate XP pace.
+   - **MemberProgressCard**:
+     - Status Badge: Emerald "Updated" pill if member modified a task, added an extra, or turned on Rest Mode this week; Amber "Not yet" pill otherwise.
+     - Otter Level badge with level threshold chip.
+     - Blocked Task Alert ("Stuck on a rock"): Amber alert box listing blocked task title and member's blocker note with jump-in assistance cue.
+     - Rest Mode indicator: Purple riverbank chip if resting this week.
+
+2. **Weekly Leaderboard (`/leaderboard`)**:
+   - **PodiumSection (Top 3)**:
+     - Gold, Silver, Bronze highlighted rank cards displaying full name, role title, score percentage (capped at 120.00%), and finished task count.
+     - Visible to ALL members.
+   - **PersonalRankCard**:
+     - For non-top-3 lead members: distinct card displaying their own rank (e.g. #4, #5) and score %, maintaining privacy from other non-top-3 members.
+   - **ExecutiveFullTable**:
+     - Visible strictly to executives & super admins: complete team roster with raw task XP, target snapshot, tasks finished, and tie-breaker timestamps.
+   - **RestingRiverbankSection**:
+     - Distinct section displaying resting members, clearly indicating target is waived and streak is frozen (never ranked last).
+
+3. **Monthly Season Page (`/leaderboard/season` or Season Tab)**:
+   - **TopOtterCelebrationBanner**: Prominent golden mascot banner honoring the #1 Top Otter of the closed month with trophy icon and average score.
+   - **MonthlySeasonTable**: Ranked by monthly average score (excluding rest weeks).
+   - **MemberSeasonBreakdown**: Expandable weekly history showing Week-by-Week scores and rest status.
+   - **AdminCloseWeekControl**: Super admin trigger button ("Run Close Now") with confirmation dialog, displaying real-time idempotent closure status.

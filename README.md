@@ -46,37 +46,69 @@ The `SUPABASE_SERVICE_ROLE_KEY` does **not** carry the `NEXT_PUBLIC_` prefix. Ne
 
 ---
 
-## Database Migrations & Where to Change Meeting Time
+## Phase 2: My Week, Quick Picks, Extras, XP Rules, Levels & Rest Mode
 
-### 1. Apply Schema Migrations
-Run the SQL migration files in order in your Supabase SQL Editor:
-1. `supabase/migrations/20261031000001_initial_schema.sql` (Creates `profiles`, `settings`, triggers)
-2. `supabase/migrations/20261031000002_self_service_and_approvals.sql` (Adds `status`, `requested_role_title`, hardened RLS policies)
-
-### 2. How to Change the Saturday Meeting Time
-The meeting time is stored in the database `settings` table (row `id = 1`). You can change it in either of two ways:
-
-- **Via Supabase Dashboard**: Go to **Table Editor** → click `settings` table → double-click `meeting_time` (or `meeting_weekday`) and update the value (e.g. `11:00 AM`).
-- **Via SQL Editor**:
-  ```sql
-  update public.settings
-  set meeting_time = '11:00 AM'
-  where id = 1;
-  ```
+- **My Week Dashboard (`/my-week`)**: Members view assigned tasks and personal extras, with one-tap status updates ("I'm doing", "🪨 Blocked", "I finished").
+- **Database-Enforced XP Rules**:
+  - Small: 10 XP, Medium: 30 XP, Big: 50 XP.
+  - Weekly task XP cap of 150 XP per member. If a finished task would exceed 150 XP, only the remaining capacity is awarded.
+  - +10 XP early cutoff bonus for the first task completed before the Saturday meeting cutoff each week.
+  - Idempotent awarding and undo: marking a task unfinished voids its XP and recalculates the cap, re-evaluating the early bonus to the next eligible task.
+  - Cutoff lock: after the Saturday cutoff in Asia/Manila, tasks of the closed week cannot be edited, finished, or deleted.
+- **Extras Shelf**: Members add quick picks or custom tasks across Platforms, Marketing, Clients, Operations, Growth, and Other.
+- **Otter Levels**: Pup (0 XP), Paddler (150 XP), Swimmer (450 XP), Diver (900 XP), Raft Leader (1,500 XP), Keystone (2,500 XP).
+- **Rest Mode**: Up to 2 weeks per calendar month in Asia/Manila; waives weekly target and freezes streaks while still allowing members to earn XP.
 
 ---
 
-## How to Test
+## Phase 3: Team Dashboard, Leaderboard, Weekly Close & Monthly Season
 
-Run the automated E2E test suite:
+- **Team Dashboard (`/team`)**:
+  - Shows every active member with an instant visual indicator: **Updated** (green) vs **Not yet** (amber). "Updated" means the member moved a task off todo, added an Extra, or turned on Rest Mode this week.
+  - Member Otter Level badges with total XP.
+  - "Stuck on a rock" blocked task alerts displaying the blocker note so teammates can help.
+  - Team Progress Chart displaying task distribution (Done, In Progress, Blocked, Todo) and aggregate team target completion percentage.
+- **Weekly Leaderboard (`/leaderboard`)**:
+  - **Scoring**: `weekly_score = (task_xp / target) * 100`, strictly capped at 120.00%. Task XP only (early bonus and kudos do not count).
+  - **Top 3 Visibility & Privacy**: Top 3 ranks are visible to the entire team. Non-top-3 lead members see only their own rank and score, keeping other non-top-3 peers private. Executives and Super Admins see the full roster with raw metrics.
+  - **Rest Mode Separation**: Resting members are shown in a dedicated section with targets waived, and are never ranked last or penalized.
+  - **Tie-Breakers**: 1) Score DESC, 2) Tasks Finished DESC, 3) Earliest Update ASC, 4) Alphabetical by Name ASC.
+- **Monthly Season & Top Otter (`/leaderboard` Season Tab)**:
+  - Season score = Average of weekly scores in that month, **excluding Rest Mode weeks**. Members who rested all month are unranked.
+  - Celebrates the #1 member as the **Top Otter** of the month with a golden champion showcase banner.
+  - Month history dropdown and week-by-week score breakdown for each member.
+- **Weekly Close Job & Scheduler**:
+  - Automatically finalizes weekly scores into `week_scores`, snapshots the member's target at close, locks the week, opens the next week, and updates streaks.
+  - When the last week of a month closes, calculates monthly season scores (`month_scores`) and names the Top Otter.
+  - Powered by Supabase `pg_cron` (hourly schedule) with a manual **Run Close Now** button in the executive console for testing (guaranteed idempotent).
+
+---
+
+## Database Migrations
+
+Apply migrations in order in Supabase SQL Editor:
+1. `supabase/migrations/20261031000001_initial_schema.sql` (Profiles, settings, app shell)
+2. `supabase/migrations/20261031000002_self_service_and_approvals.sql` (Self-service signup, approvals)
+3. `supabase/migrations/20261101000001_phase2_weeks_tasks_xp.sql` (Weeks, tasks, quick picks, XP events, rest mode)
+4. `supabase/migrations/20261101000003_phase2_verification_hardening.sql` (Recalculation, size edit blocking, active assign)
+5. `supabase/migrations/20261101000004_phase3_leaderboard_close.sql` (week_scores, month_scores, close_week RPC, tie-breakers, RLS)
+
+---
+
+## How to Test Phase 3
+
+Run the automated test suites:
 ```bash
-node scripts/test-phase1-e2e.mjs
+# 1. Database scoring, 120% cap, tie-breakers, rest exclusion, target snapshot, idempotency:
+node scripts/test-phase3-db-logic.mjs
+
+# 2. Playwright E2E browser tests (Team page, Updated vs Not yet, Leaderboard privacy, Season):
+node scripts/test-phase3-e2e.mjs
 ```
 
 Or test manually in your browser:
-1. **Invalid Code Rejection**: Visit `/signup` and enter an incorrect join code. Verify registration is blocked with a 403 error.
-2. **Pending User Flow**: Register a standard member with code `OTTER-RAFT-2026`. Verify immediate redirection to `/pending-approval`. Try manually navigating to `/`, `/team`, or `/my-week`—verify you are immediately bounced back to `/pending-approval`.
-3. **Bootstrap Admin Registration**: Register with `christian@otter.systems` or `railey@otter.systems`. Verify you are automatically approved as a Super Admin and land on Home.
-4. **Member Approval**: As the Super Admin, navigate to `/admin/pending`, view the pending user, adjust their role classification and privilege flags, and click **Approve & Activate**.
-5. **Approved Member Access**: Sign out and log in as the approved member. Verify full access to all tabs.
-6. **Rate Limiting**: Attempt rapid invalid login attempts to verify HTTP 429 protection.
+1. **Team Dashboard (`/team`)**: Log in as a member. Verify your card says "Not yet". Add an Extra task or move an assigned task to "I'm doing" or mark it "Blocked". Refresh `/team`—verify your card now displays "Updated" (green), and any blocked task displays "Stuck on a rock" with your note.
+2. **Leaderboard Privacy (`/leaderboard`)**: Log in as a Lead member. Verify you see the Top 3 podium with names and scores, and your personal rank card at the bottom, but cannot see other non-top-3 members' individual cards.
+3. **Executive Full Roster**: Log in as an Executive (e.g. Railey COO). Verify you can see all team members, task XP, targets, and tasks finished.
+4. **Manual Close Week**: In `/leaderboard` as an Executive, click **Run Close Now**. Verify the week is finalized, scores are snapshotted, the next week is opened, and running it again safely reports that the week is already closed.
+5. **Monthly Season Tab**: Click **Monthly Season** on `/leaderboard`. Verify the Top Otter champion banner is displayed alongside monthly rankings and weekly breakdowns.
