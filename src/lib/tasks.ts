@@ -323,7 +323,8 @@ const finishLocks = new Map<string, Promise<void>>();
 // Finish task and award XP (Enforces 150 task cap, 10 early cutoff bonus, and idempotency)
 export async function finishTaskAndAwardXP(
   taskId: string,
-  userId: string
+  userId: string,
+  simulatedNow?: Date
 ): Promise<{
   success: boolean;
   alreadyFinished: boolean;
@@ -342,7 +343,7 @@ export async function finishTaskAndAwardXP(
 
   await existingLock;
   try {
-    return await executeFinishTaskAndAwardXP(taskId, userId);
+    return await executeFinishTaskAndAwardXP(taskId, userId, simulatedNow);
   } finally {
     releaseLock!();
     if (finishLocks.get(taskId) === currentLock) {
@@ -353,7 +354,8 @@ export async function finishTaskAndAwardXP(
 
 async function executeFinishTaskAndAwardXP(
   taskId: string,
-  userId: string
+  userId: string,
+  simulatedNow?: Date
 ): Promise<{
   success: boolean;
   alreadyFinished: boolean;
@@ -389,8 +391,9 @@ async function executeFinishTaskAndAwardXP(
   const task = tasks.get(taskId);
   if (!task) throw new Error('Task not found.');
 
+  const finishTime = simulatedNow || new Date();
   const week = weeks.get(task.week_id);
-  if (week && (!week.is_current || new Date() >= new Date(week.cutoff_at))) {
+  if (week && (!week.is_current || finishTime >= new Date(week.cutoff_at))) {
     throw new Error('Week is locked: Saturday cutoff has passed.');
   }
 
@@ -867,9 +870,13 @@ export async function getTeamProgress(): Promise<{
     if (isResting) restingCount++;
 
     // "Updated" means the member moved a task off todo (doing, done, blocked),
-    // added an Extra, or turned on Rest Mode this week
-    const hasMovedOffTodo = memberTasks.some((t) => t.status !== 'todo');
-    const hasAddedExtra = memberTasks.some((t) => t.source === 'extra');
+    // added an Extra, or turned on Rest Mode this week (excluding untouched rollover tasks)
+    const hasMovedOffTodo = memberTasks.some((t) => {
+      const isRolledOver = t.id.startsWith('rollover-');
+      if (!isRolledOver) return t.status !== 'todo';
+      return new Date(t.updated_at).getTime() > new Date(t.created_at).getTime();
+    });
+    const hasAddedExtra = memberTasks.some((t) => t.source === 'extra' && !t.id.startsWith('rollover-'));
     const hasUpdatedThisWeek = isResting || hasMovedOffTodo || hasAddedExtra;
 
     if (hasUpdatedThisWeek) updatedCount++;
@@ -1408,10 +1415,8 @@ export async function getMonthlySeasonLeaderboard(
   };
 }
 
-// Concurrency lock for weekly close
-let closeWeekLock: Promise<any> = Promise.resolve();
-
 // 4. Close Week (Idempotent: safe to run twice, locks week, opens next week, snapshots scores, rolls over tasks, updates streaks)
+// Database-level locking (Postgres advisory lock / row-level lock) guarantees concurrency safety across serverless instances without in-memory locks.
 export async function closeWeek(
   weekId?: string,
   triggeredBySuperAdmin = false
@@ -1426,19 +1431,7 @@ export async function closeWeek(
   topOtterUserId?: string;
   message: string;
 }> {
-  // Concurrency lock: serialize simultaneous calls
-  const prevLock = closeWeekLock;
-  let release: () => void;
-  closeWeekLock = new Promise<void>((res) => {
-    release = res;
-  });
-
-  await prevLock;
-  try {
-    return await executeCloseWeek(weekId, triggeredBySuperAdmin);
-  } finally {
-    release!();
-  }
+  return await executeCloseWeek(weekId, triggeredBySuperAdmin);
 }
 
 async function executeCloseWeek(
@@ -1529,9 +1522,22 @@ async function executeCloseWeek(
 
     let tasksFinished = 0;
     let finishedBeforeCutoff = 0;
+    let hasMovedOffTodo = false;
+    let hasAddedExtra = false;
     let firstUpdateAt: string | null = null;
     for (const t of tasks.values()) {
       if (t.user_id === profile.id && t.week_id === targetWeek!.id) {
+        const isRolledOver = t.id.startsWith('rollover-');
+        if (!isRolledOver && t.status !== 'todo') {
+          hasMovedOffTodo = true;
+        } else if (isRolledOver && new Date(t.updated_at).getTime() > new Date(t.created_at).getTime()) {
+          hasMovedOffTodo = true;
+        }
+
+        if (t.source === 'extra' && !isRolledOver) {
+          hasAddedExtra = true;
+        }
+
         if (t.status === 'done') {
           tasksFinished++;
           if (t.finished_at && new Date(t.finished_at) < new Date(targetWeek!.cutoff_at)) {
@@ -1543,6 +1549,9 @@ async function executeCloseWeek(
         }
       }
     }
+
+    // A member has updated this week if they moved a task off todo (doing, done, blocked) OR added an Extra
+    const hasUpdatedThisWeek = hasMovedOffTodo || hasAddedExtra;
 
     // Score: capped at 120.00%
     const score = isResting ? null : Math.min(120, Math.round(((taskXP / target) * 100) * 100) / 100);
@@ -1563,12 +1572,14 @@ async function executeCloseWeek(
     });
 
     // Update Streaks:
-    // +1 for finish before cutoff, frozen during Rest Mode, reset after missed normal week
+    // Follows the same rule as "Updated" status:
+    // +1 for update before cutoff (task moved off todo, Extra added, or Rest Mode),
+    // frozen during Rest Mode, reset after missed normal week
     const runtimeUser = userStore.get(profile.id);
     if (runtimeUser) {
       if (isResting) {
         // Streak is frozen (unaltered)
-      } else if (finishedBeforeCutoff > 0) {
+      } else if (hasUpdatedThisWeek) {
         const currentStreak = (runtimeUser.current_streak || 0) + 1;
         runtimeUser.current_streak = currentStreak;
         runtimeUser.max_streak = Math.max(runtimeUser.max_streak || 0, currentStreak);

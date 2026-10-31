@@ -15,8 +15,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'taskId is required.' }, { status: 400 });
   }
 
+  const simulateTimeHeader = request.headers.get('x-test-simulate-time');
+  const simulatedNow = simulateTimeHeader ? new Date(simulateTimeHeader) : undefined;
+
   try {
-    const result = await finishTaskAndAwardXP(taskId, profile.id);
+    const result = await finishTaskAndAwardXP(taskId, profile.id, simulatedNow);
     const updatedLevelInfo = await getUserLevelAndXP(profile.id);
 
     return NextResponse.json({

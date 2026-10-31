@@ -363,24 +363,26 @@ async function runVerification() {
   }
 
   // ==============================================================================
-  // Item 4: Streaks update at close: +1 for update before cutoff, frozen during Rest Mode, reset after missed week
+  // Item 4: Streaks update at close: Uses the same rule as "Updated" status:
+  // +1 for update before cutoff (task moved off todo, Extra added, or Rest Mode),
+  // frozen during Rest Mode, reset after missed normal week
   // ==============================================================================
-  console.log('\n--- Checking Item 4: Streak updates at close ---');
+  console.log('\n--- Checking Item 4: Streak updates matching "Updated" status ---');
   try {
     // Current week:
-    // 1. Alex finishes a task before cutoff
-    const alexTask = await (await fetch(`${baseUrl}/api/tasks/extra`, {
+    // 1. Alex moves a task to 'doing' (without finishing it) -> Alex is "Updated"
+    const alexDoingTask = await (await fetch(`${baseUrl}/api/tasks/extra`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: lead1Cookie, ...testHeaders },
-      body: JSON.stringify({ title: 'Alex Streak Builder', category: 'Platforms', size: 'small' }),
+      body: JSON.stringify({ title: 'Alex Streak Via Doing', category: 'Platforms', size: 'small' }),
     })).json();
-    await fetch(`${baseUrl}/api/tasks/finish`, {
+    await fetch(`${baseUrl}/api/tasks/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: lead1Cookie, ...testHeaders },
-      body: JSON.stringify({ taskId: alexTask.task.id }),
+      body: JSON.stringify({ taskId: alexDoingTask.task.id, status: 'doing' }),
     });
 
-    // 2. Beatrice turns on Rest Mode
+    // 2. Beatrice turns on Rest Mode -> streak frozen
     await fetch(`${baseUrl}/api/tasks/rest-mode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: lead2Cookie, ...testHeaders },
@@ -406,16 +408,11 @@ async function runVerification() {
     const alexStreak1 = alexWeek1.streak;
     const beatriceStreakFrozen = beatriceWeek1.streak === 0;
 
-    // 4. In the next week, Alex finishes another task
-    const alexTask2 = await (await fetch(`${baseUrl}/api/tasks/extra`, {
+    // 4. In the next week, Alex adds an Extra task (without finishing it) -> Alex is "Updated"
+    await fetch(`${baseUrl}/api/tasks/extra`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: lead1Cookie, ...testHeaders },
-      body: JSON.stringify({ title: 'Alex Streak Continuation', category: 'Platforms', size: 'small' }),
-    })).json();
-    await fetch(`${baseUrl}/api/tasks/finish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: lead1Cookie, ...testHeaders },
-      body: JSON.stringify({ taskId: alexTask2.task.id }),
+      body: JSON.stringify({ title: 'Alex Streak Via Extra Task', category: 'Platforms', size: 'medium' }),
     });
 
     // Close week again
@@ -430,7 +427,7 @@ async function runVerification() {
     })).json();
     const alexStreak2 = alexWeek2.streak;
 
-    // 5. Simulate a missed week for Alex: close week without finishing any tasks
+    // 5. Simulate a missed week for Alex: close week without moving any task off todo, no Extras, not resting
     await fetch(`${baseUrl}/api/tasks/close-week`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
@@ -443,7 +440,7 @@ async function runVerification() {
     const streakReset = alexWeekAfterMiss.streak === 0;
 
     if (alexStreak1 >= 1 && alexStreak2 > alexStreak1 && beatriceStreakFrozen && streakReset) {
-      console.log('✅ Item 4 Passed: Streak increments on finish before cutoff, freezes in Rest Mode, and resets after missed normal week.');
+      console.log('✅ Item 4 Passed: Streak increments on update (moved off todo, Extra added), freezes in Rest Mode, and resets after missed week.');
       results.item4 = 'PASS';
     } else {
       console.error('❌ Item 4 Failed:', {
@@ -669,13 +666,44 @@ async function runVerification() {
     });
     const finishAfterCutoffJson = await finishAfterCutoffRes.json();
 
+    // 9c. TEST: Member attempts to finish a task AFTER cutoff but BEFORE the close runs:
+    // Create an uncompleted task in the current active week
+    const taskAfterCutoffBeforeClose = await (await fetch(`${baseUrl}/api/tasks/extra`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: lead1Cookie, ...testHeaders },
+      body: JSON.stringify({ title: 'Task After Cutoff Before Close', category: 'Platforms', size: 'medium' }),
+    })).json();
+
+    const currentWeekInfo = await (await fetch(`${baseUrl}/api/tasks`, {
+      headers: { Cookie: lead1Cookie, ...testHeaders },
+    })).json();
+
+    // Simulate time 5 minutes AFTER the cutoff, while the week is still active and close job has NOT yet run
+    const simulatedPastCutoffTime = new Date(new Date(currentWeekInfo.currentWeek.cutoff_at).getTime() + 5 * 60 * 1000).toISOString();
+
+    const finishAfterCutoffBeforeCloseRes = await fetch(`${baseUrl}/api/tasks/finish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: lead1Cookie,
+        'x-test-simulate-time': simulatedPastCutoffTime,
+        ...testHeaders,
+      },
+      body: JSON.stringify({ taskId: taskAfterCutoffBeforeClose.task.id }),
+    });
+    const finishAfterCutoffBeforeCloseJson = await finishAfterCutoffBeforeCloseRes.json();
+    const blockedBeforeClose =
+      finishAfterCutoffBeforeCloseRes.status === 400 &&
+      finishAfterCutoffBeforeCloseJson.error?.includes('cutoff has passed');
+
     if (
       finishBeforeRes.status === 200 &&
       finishBeforeJson.success === true &&
       finishAfterCutoffRes.status === 400 &&
-      finishAfterCutoffJson.error?.includes('cutoff has passed')
+      finishAfterCutoffJson.error?.includes('cutoff has passed') &&
+      blockedBeforeClose
     ) {
-      console.log('✅ Item 9 Passed: Tasks finished before cutoff succeed; tasks finished after cutoff are rejected (400).');
+      console.log('✅ Item 9 Passed: Tasks finished before cutoff succeed; tasks finished after cutoff (before OR after close runs) are strictly rejected (400).');
       results.item9 = 'PASS';
     } else {
       console.error('❌ Item 9 Failed:', {
@@ -683,6 +711,8 @@ async function runVerification() {
         finishBeforeSuccess: finishBeforeJson.success,
         finishAfterCutoffStatus: finishAfterCutoffRes.status,
         finishAfterCutoffError: finishAfterCutoffJson.error,
+        blockedBeforeClose,
+        finishAfterCutoffBeforeCloseStatus: finishAfterCutoffBeforeCloseRes.status,
       });
       results.item9 = 'FAIL';
     }
