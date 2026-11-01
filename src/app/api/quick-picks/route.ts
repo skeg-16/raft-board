@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getCurrentProfile } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAdminAction } from '@/lib/tasks';
 import type { QuickPick, TaskCategory, TaskSize } from '@/types/database';
 
 // GET /api/quick-picks: Active members can read quick picks
@@ -99,6 +100,12 @@ export async function POST(request: Request) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+    await logAdminAction(profile.id, 'create_quick_pick', {
+      quick_pick_id: data.id,
+      category,
+      label: label.trim(),
+      default_size,
+    });
     return NextResponse.json({ success: true, quickPick: data });
   }
 
@@ -117,6 +124,13 @@ export async function POST(request: Request) {
   if (__raft_quick_picks) {
     __raft_quick_picks.set(id, newQP);
   }
+
+  await logAdminAction(profile.id, 'create_quick_pick', {
+    quick_pick_id: id,
+    category,
+    label: label.trim(),
+    default_size,
+  });
 
   return NextResponse.json({ success: true, quickPick: newQP });
 }
@@ -166,6 +180,10 @@ export async function PUT(request: Request) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+    await logAdminAction(profile.id, 'update_quick_pick', {
+      quick_pick_id: id,
+      updates: updateData,
+    });
     return NextResponse.json({ success: true, quickPick: data });
   }
 
@@ -181,6 +199,11 @@ export async function PUT(request: Request) {
   if (default_size) qp.default_size = default_size;
   if (typeof active === 'boolean') qp.active = active;
   __raft_quick_picks.set(id, qp);
+
+  await logAdminAction(profile.id, 'update_quick_pick', {
+    quick_pick_id: id,
+    updates: { category, label, default_size, active },
+  });
 
   return NextResponse.json({ success: true, quickPick: qp });
 }

@@ -46,16 +46,24 @@ export async function PATCH(request: Request) {
     }
   }
 
-  const result = await updateSystemSettings({
-    meeting_weekday,
-    meeting_time,
-    timezone,
-  });
+  try {
+    const result = await updateSystemSettings(
+      {
+        meeting_weekday,
+        meeting_time,
+        timezone,
+      },
+      profile.id
+    );
 
-  return NextResponse.json({
-    success: true,
-    settings: result.settings,
-    currentWeek: result.currentWeek,
-    message: 'Settings updated successfully. New meeting schedule applies starting from next week. Current week cutoff is preserved.',
-  });
+    return NextResponse.json({
+      success: true,
+      settings: result.settings,
+      currentWeek: result.currentWeek,
+      message: 'Settings updated successfully. New meeting schedule applies starting from next week. Current week cutoff is preserved.',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to update settings.';
+    return NextResponse.json({ error: msg }, { status: 400 });
+  }
 }

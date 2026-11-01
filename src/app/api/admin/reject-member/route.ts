@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAdminAction } from '@/lib/tasks';
 
 export async function POST(request: Request) {
   const currentProfile = await getCurrentProfile();
@@ -38,6 +39,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    await logAdminAction(currentProfile.id, 'reject_member', {
+      member_id: memberId,
+    });
+
     return NextResponse.json({ success: true, message: 'Member registration rejected.' });
   }
 
@@ -53,6 +58,10 @@ export async function POST(request: Request) {
   profile.active = false;
   profile.updated_at = new Date().toISOString();
   store.set(memberId, profile);
+
+  await logAdminAction(currentProfile.id, 'reject_member', {
+    member_id: memberId,
+  });
 
   return NextResponse.json({ success: true, message: 'Member registration rejected.' });
 }

@@ -94,6 +94,21 @@ export interface AuditLog {
   created_at: string;
 }
 
+export class AppendOnlyAuditLogMap extends Map<string, AuditLog> {
+  override delete(_key: string): boolean {
+    throw new Error('Audit logs are strictly append-only. Modification or deletion is not permitted for any role.');
+  }
+  override clear(): void {
+    throw new Error('Audit logs are strictly append-only. Modification or deletion is not permitted for any role.');
+  }
+  override set(key: string, value: AuditLog): this {
+    if (this.has(key)) {
+      throw new Error('Audit logs are strictly append-only. Modification or deletion is not permitted for any role.');
+    }
+    return super.set(key, value);
+  }
+}
+
 // In-Memory mock state for local / test environment
 declare global {
   // eslint-disable-next-line no-var
@@ -111,7 +126,7 @@ declare global {
   // eslint-disable-next-line no-var
   var __raft_month_scores: Map<string, MonthScore> | undefined;
   // eslint-disable-next-line no-var
-  var __raft_audit_logs: Map<string, AuditLog> | undefined;
+  var __raft_audit_logs: AppendOnlyAuditLogMap | undefined;
 }
 
 export function getStores() {
@@ -132,7 +147,7 @@ export function getStores() {
   if (!globalThis.__raft_rest_modes) globalThis.__raft_rest_modes = new Map();
   if (!globalThis.__raft_week_scores) globalThis.__raft_week_scores = new Map();
   if (!globalThis.__raft_month_scores) globalThis.__raft_month_scores = new Map();
-  if (!globalThis.__raft_audit_logs) globalThis.__raft_audit_logs = new Map();
+  if (!globalThis.__raft_audit_logs) globalThis.__raft_audit_logs = new AppendOnlyAuditLogMap();
 
   return {
     weeks: globalThis.__raft_weeks,
@@ -203,10 +218,105 @@ export function parseWeekday(dayName?: string): number {
   return map[dayName?.trim().toLowerCase() || 'saturday'] ?? 6;
 }
 
+export const VALID_WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+export function isValidWeekday(weekday?: string): boolean {
+  if (!weekday) return false;
+  return VALID_WEEKDAYS.includes(weekday.trim().toLowerCase() as any);
+}
+
+export function isValidMeetingTime(timeStr?: string): boolean {
+  if (!timeStr) return false;
+  const trimmed = timeStr.trim();
+  const ampmRegex = /^(0?[1-9]|1[0-2]):[0-5][0-9]\s*(AM|PM)$/i;
+  const militaryRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  return ampmRegex.test(trimmed) || militaryRegex.test(trimmed);
+}
+
+// Calculate the next cutoff date based on meeting weekday & time in the specified timezone
+export function calculateNextCutoff(
+  startAt: Date | string,
+  weekday: string,
+  timeStr: string,
+  timezone = 'Asia/Manila'
+): Date {
+  const tzOffsetHours = timezone === 'Asia/Manila' ? 8 : 8;
+  const startDate = typeof startAt === 'string' ? new Date(startAt) : startAt;
+  const utc = startDate.getTime() + startDate.getTimezoneOffset() * 60000;
+  const localStart = new Date(utc + 3600000 * tzOffsetHours);
+
+  const startDay = localStart.getUTCDay(); // 0 is Sun, 6 is Sat
+  const targetDay = parseWeekday(weekday);
+  const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(timeStr);
+
+  let daysUntil = (targetDay - startDay + 7) % 7;
+  if (daysUntil === 0) {
+    daysUntil = 7;
+  }
+
+  const cutoffYear = localStart.getUTCFullYear();
+  const cutoffMonth = localStart.getUTCMonth();
+  const cutoffDate = localStart.getUTCDate() + daysUntil;
+
+  const cutoffLocal = new Date(Date.UTC(cutoffYear, cutoffMonth, cutoffDate, meetingHour, meetingMinute, 0));
+  const cutoffAt = new Date(cutoffLocal.getTime() - 3600000 * tzOffsetHours);
+  return cutoffAt;
+}
+
+// Unified append-only audit logger for all admin and super-admin actions
+export async function logAdminAction(
+  userId: string,
+  action: string,
+  details: Record<string, any> = {}
+): Promise<AuditLog> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data, error } = await (admin.from('audit_logs') as any)
+      .insert({
+        user_id: userId,
+        action,
+        details,
+        created_at: new Date().toISOString(),
+      })
+      .select('*')
+      .single();
+    if (error) throw new Error(error.message);
+    return data as AuditLog;
+  }
+
+  const { auditLogs } = getStores();
+  const auditLogId = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const entry: AuditLog = {
+    id: auditLogId,
+    user_id: userId,
+    action,
+    details,
+    created_at: new Date().toISOString(),
+  };
+  auditLogs.set(auditLogId, entry);
+  return entry;
+}
+
 // Updates system settings (meeting day/time/tz).
 // RULE: Changes apply starting from the NEXT week by default.
 // The current open week's cutoff is NEVER altered, locked, or closed prematurely by settings updates.
-export async function updateSystemSettings(updates: Partial<Settings>): Promise<{ settings: Settings; currentWeek: Week }> {
+export async function updateSystemSettings(
+  updates: Partial<Settings>,
+  adminUserId?: string
+): Promise<{ settings: Settings; currentWeek: Week }> {
+  if (updates.meeting_weekday && !isValidWeekday(updates.meeting_weekday)) {
+    throw new Error('Invalid meeting weekday. Must be Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, or Saturday.');
+  }
+  if (updates.meeting_time && !isValidMeetingTime(updates.meeting_time)) {
+    throw new Error('Invalid meeting time format. Must be e.g. 10:00 AM or 14:30.');
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
     supabaseUrl &&
@@ -235,6 +345,10 @@ export async function updateSystemSettings(updates: Partial<Settings>): Promise<
       updated_at: new Date().toISOString(),
     };
     updatedSettings = inMemorySettings;
+  }
+
+  if (adminUserId) {
+    await logAdminAction(adminUserId, 'update_settings', { updates });
   }
 
   // Preserve the current open week's cutoff completely intact.
@@ -296,31 +410,24 @@ export async function updateCurrentWeekCutoff(
   }
 
   // Local in-memory fallback
-  const { weeks, auditLogs } = getStores();
+  const { weeks } = getStores();
   const currentWeek = await getCurrentWeek();
   const oldCutoff = currentWeek.cutoff_at;
   currentWeek.cutoff_at = targetDate.toISOString();
   weeks.set(currentWeek.id, currentWeek);
 
-  const auditLogId = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  auditLogs.set(auditLogId, {
-    id: auditLogId,
-    user_id: userId,
-    action: 'change_current_week_cutoff',
-    details: {
-      week_id: currentWeek.id,
-      old_cutoff: oldCutoff,
-      new_cutoff: targetDate.toISOString(),
-      reason: reason || 'Manual super admin adjustment',
-    },
-    created_at: new Date().toISOString(),
+  const auditEntry = await logAdminAction(userId, 'change_current_week_cutoff', {
+    week_id: currentWeek.id,
+    old_cutoff: oldCutoff,
+    new_cutoff: targetDate.toISOString(),
+    reason: reason || 'Manual super admin adjustment',
   });
 
   return {
     success: true,
     message: 'Current week cutoff successfully updated.',
     currentWeek,
-    auditLogId,
+    auditLogId: auditEntry.id,
   };
 }
 
@@ -463,8 +570,14 @@ export async function getCurrentWeek(): Promise<Week> {
 // Get or create next week for assignments made at/after the cutoff or during weekly close
 export async function getOrCreateNextWeek(currentWeek: Week): Promise<Week> {
   const { weeks } = getStores();
+  const settings = await getSettings();
   const nextStart = new Date(currentWeek.cutoff_at);
-  const nextCutoff = new Date(nextStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const nextCutoff = calculateNextCutoff(
+    nextStart,
+    settings.meeting_weekday,
+    settings.meeting_time,
+    settings.timezone
+  );
   const nextYear = nextCutoff.getUTCFullYear();
   const nextWeekNum = currentWeek.week_number + 1;
   const nextWeekId = `week-${nextYear}-${nextWeekNum}`;
@@ -1851,8 +1964,14 @@ async function executeCloseWeek(
   weeks.set(targetWeek.id, targetWeek);
 
   // 3. Open next week
+  const settings = await getSettings();
   const nextStart = new Date(targetWeek.cutoff_at);
-  const nextCutoff = new Date(nextStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const nextCutoff = calculateNextCutoff(
+    nextStart,
+    settings.meeting_weekday,
+    settings.meeting_time,
+    settings.timezone
+  );
   const nextYear = nextCutoff.getUTCFullYear();
   const nextWeekNum = targetWeek.week_number + 1;
   const nextWeekId = `week-${nextYear}-${nextWeekNum}`;

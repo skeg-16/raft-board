@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getCurrentProfile } from '@/lib/auth';
-import { closeWeek } from '@/lib/tasks';
+import { closeWeek, logAdminAction } from '@/lib/tasks';
 
 export async function POST(request: Request) {
   const profile = await getCurrentProfile();
@@ -29,6 +29,15 @@ export async function POST(request: Request) {
   try {
     const isSuperAdminTriggered = !isCronAuth && isSuperAdmin && body.force !== false;
     const result = await closeWeek(body.weekId, isSuperAdminTriggered, body.simulatedNow);
+
+    if (isSuperAdminTriggered && profile) {
+      await logAdminAction(profile.id, 'manual_close_week', {
+        week_id: body.weekId,
+        force: body.force !== false,
+        simulated_now: body.simulatedNow,
+      });
+    }
+
     return NextResponse.json(result);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to close week.';

@@ -356,14 +356,20 @@ export function MeetingSettingsForm({
                   >
                     <div className="flex items-center justify-between text-slate-500 text-[10px]">
                       <span>{new Date(log.created_at).toLocaleString()}</span>
-                      <span className="font-bold text-amber-700 uppercase">Cutoff Modified</span>
+                      <span className="font-bold text-amber-700 uppercase">{log.action?.replace(/_/g, ' ') || 'Admin Action'}</span>
                     </div>
                     <p className="font-semibold text-slate-800">
-                      Reason: {log.details?.reason || 'Manual super admin adjustment'}
+                      {log.details?.reason ? `Reason: ${log.details.reason}` : `Action: ${log.action}`}
                     </p>
-                    <p className="text-slate-500 font-mono text-[10px]">
-                      New: {new Date(log.details?.new_cutoff).toLocaleString()}
-                    </p>
+                    {log.details?.new_cutoff ? (
+                      <p className="text-slate-500 font-mono text-[10px]">
+                        New Cutoff: {new Date(log.details?.new_cutoff).toLocaleString()}
+                      </p>
+                    ) : (
+                      <p className="text-slate-500 font-mono text-[10px] truncate">
+                        Details: {JSON.stringify(log.details)}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>

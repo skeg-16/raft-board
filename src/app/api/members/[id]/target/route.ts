@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAdminAction } from '@/lib/tasks';
 
 // PATCH /api/members/[id]/target - Edit a member's weekly target XP
 // Rules: Executives only, never the member themselves.
@@ -60,6 +61,12 @@ export async function PATCH(
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+
+    await logAdminAction(profile.id, 'update_weekly_target', {
+      member_id: targetMemberId,
+      new_target_xp: targetXP,
+    });
+
     return NextResponse.json({ success: true, profile: data });
   }
 
@@ -70,9 +77,16 @@ export async function PATCH(
     return NextResponse.json({ error: 'Member not found.' }, { status: 404 });
   }
 
+  const oldTarget = targetUser.weekly_target_xp;
   targetUser.weekly_target_xp = targetXP;
   targetUser.updated_at = new Date().toISOString();
   userStore.set(targetMemberId, targetUser);
+
+  await logAdminAction(profile.id, 'update_weekly_target', {
+    member_id: targetMemberId,
+    old_target_xp: oldTarget,
+    new_target_xp: targetXP,
+  });
 
   return NextResponse.json({
     success: true,
