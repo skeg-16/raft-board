@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
-import { isTokenRevoked } from '@/lib/security';
+import { isTokenRevoked, isSessionActiveInDb } from '@/lib/security';
 import type { Profile, Settings } from '@/types/database';
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -92,7 +92,7 @@ export async function getCurrentProfile(): Promise<Profile | null> {
 
     if (!user) return null;
 
-    if (sessionCookie && isTokenRevoked(sessionCookie.value, user.id)) {
+    if (sessionCookie && (isTokenRevoked(sessionCookie.value, user.id) || !(await isSessionActiveInDb(sessionCookie.value, user.id)))) {
       return null;
     }
 
@@ -169,7 +169,7 @@ export async function getSessionAuth(request: Request): Promise<{
 
     if (!user) return { profile: null, aal: 'aal1', userId: null };
 
-    if (isTokenRevoked(activeToken, user.id)) {
+    if (isTokenRevoked(activeToken, user.id) || !(await isSessionActiveInDb(activeToken, user.id, parsedCookie?.issuedAt))) {
       return { profile: null, aal: 'aal1', userId: null };
     }
 

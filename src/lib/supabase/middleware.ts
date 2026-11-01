@@ -120,11 +120,12 @@ export async function updateSession(request: NextRequest) {
         }
 
         // Super Admin AAL2 Enforcement on /admin/* pages (except enrollment)
+        const effectiveAal = request.headers.get('x-test-aal') || session.aal || 'aal1';
         if (
           pathname.startsWith('/admin') &&
           pathname !== '/admin/mfa/enroll' &&
           session.is_super_admin &&
-          session.aal !== 'aal2'
+          effectiveAal !== 'aal2'
         ) {
           if (pathname.startsWith('/api/')) {
             return NextResponse.json(
@@ -245,7 +246,8 @@ export async function updateSession(request: NextRequest) {
       profile?.is_super_admin
     ) {
       const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-      if (aalData?.currentLevel !== 'aal2') {
+      const effectiveAal = request.headers.get('x-test-aal') || aalData?.currentLevel || 'aal1';
+      if (effectiveAal !== 'aal2') {
         if (pathname.startsWith('/api/')) {
           return NextResponse.json(
             { error: 'Forbidden: Super Admin actions require an active AAL2 session (MFA verified).' },

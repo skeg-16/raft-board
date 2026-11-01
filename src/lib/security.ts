@@ -1,10 +1,10 @@
 import crypto from 'crypto';
 import { getStores } from '@/lib/tasks';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getRevocationStore, revokeToken, isTokenRevoked } from '@/lib/revocation';
+import { getRevocationStore, revokeToken, isTokenRevoked, isSessionActiveInDb } from '@/lib/revocation';
 import type { LoginLog, ActiveSession } from '@/types/database';
 
-export { revokeToken, isTokenRevoked, getRevocationStore };
+export { revokeToken, isTokenRevoked, isSessionActiveInDb, getRevocationStore };
 
 /**
  * Anonymize IP address: HMAC-SHA256 using a server-only secret.
@@ -225,10 +225,30 @@ export async function revokeUserAuthSessions(userId: string): Promise<void> {
       }
     }
     try {
+      await (admin.from('profiles') as any)
+        .update({ sessions_revoked_before: new Date().toISOString() })
+        .eq('id', userId);
+    } catch {
+      // Ignore if column not present yet
+    }
+    try {
       await admin.auth.admin.signOut(userId, 'global');
     } catch {
       // Ignore if not present
     }
+  }
+
+  // Update profile in local runtime store if present
+  try {
+    const { getRuntimeUserStore } = await import('@/lib/auth');
+    const store = getRuntimeUserStore();
+    const profile = store.get(userId);
+    if (profile) {
+      (profile as any).sessions_revoked_before = new Date().toISOString();
+      store.set(userId, profile);
+    }
+  } catch {
+    // Ignore in edge/isolated environments
   }
 }
 

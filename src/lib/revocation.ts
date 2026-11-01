@@ -36,7 +36,7 @@ export function revokeToken(token: string): void {
 }
 
 /**
- * Check if a token or session has been revoked
+ * Check if a token or session has been revoked (synchronous check against persistent state & timestamps)
  */
 export function isTokenRevoked(token?: string | null, userId?: string | null, tokenIssuedAt?: number): boolean {
   if (!token) return false;
@@ -75,4 +75,50 @@ export function isTokenRevoked(token?: string | null, userId?: string | null, to
     }
   }
   return false;
+}
+
+/**
+ * Asynchronously checks if a session is still active in the database (auth.sessions, active_sessions, and profiles).
+ * Used on every protected request to guarantee revoked sessions cannot continue making requests.
+ */
+export async function isSessionActiveInDb(
+  sessionId?: string | null,
+  userId?: string | null,
+  tokenIssuedAt?: number
+): Promise<boolean> {
+  // 1. Fast path check
+  if (isTokenRevoked(sessionId, userId, tokenIssuedAt)) {
+    return false;
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    try {
+      const { createAdminClient } = await import('@/lib/supabase/admin');
+      const admin = createAdminClient();
+
+      // Query database procedure check_session_validity which verifies:
+      // - auth.sessions (whether the session_id exists)
+      // - active_sessions tracking
+      // - profiles.sessions_revoked_before
+      const { data, error } = await (admin as any).rpc('check_session_validity', {
+        p_session_id: sessionId || null,
+        p_user_id: userId || null,
+        p_token_issued_at: tokenIssuedAt ? new Date(tokenIssuedAt).toISOString() : null,
+      });
+
+      if (!error && typeof data === 'boolean') {
+        return data;
+      }
+    } catch {
+      // Continue to next check if RPC is unavailable
+    }
+  }
+
+  return true;
 }

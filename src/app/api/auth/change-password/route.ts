@@ -61,10 +61,10 @@ export async function POST(request: Request) {
       });
     }
 
-    // Local Demo Mode
+    // Local / Test Runtime Fallback Mode
     const cookieStore = await cookies();
-    const demoCookie = cookieStore.get('raft_demo_user');
-    if (!demoCookie) {
+    const sessionCookie = cookieStore.get('raft_user_session') || cookieStore.get('raft_demo_user');
+    if (!sessionCookie) {
       return NextResponse.json(
         { error: 'Unauthorized. Please log in first.' },
         { status: 401 }
@@ -72,15 +72,27 @@ export async function POST(request: Request) {
     }
 
     try {
-      const member = JSON.parse(demoCookie.value);
-      member.must_change_password = false;
-      cookieStore.set('raft_demo_user', JSON.stringify(member), {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 60 * 60 * 24 * 7,
-      });
+      let rawVal = sessionCookie.value;
+      try {
+        rawVal = decodeURIComponent(rawVal);
+      } catch {
+        // already decoded
+      }
+      const parsed = JSON.parse(rawVal);
+      const userId = parsed.id;
+      const { getRuntimeUserStore } = await import('@/lib/auth');
+      const store = getRuntimeUserStore();
+      const user = store.get(userId);
+
+      if (!user) {
+        return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+      }
+
+      (user as any).passwordHash = newPassword;
+      (user as any).must_change_password = false;
+      user.updated_at = new Date().toISOString();
+      store.set(userId, user);
+
       return NextResponse.json({
         success: true,
         message: 'Password successfully updated!',

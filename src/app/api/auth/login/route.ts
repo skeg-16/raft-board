@@ -255,6 +255,7 @@ export async function POST(request: Request) {
         id: foundProfile.id,
         email: normalizedEmail,
         status: foundProfile.status,
+        is_super_admin: foundProfile.is_super_admin,
         issuedAt: Date.now(),
       }),
       {

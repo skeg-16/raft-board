@@ -72,7 +72,13 @@ export async function GET(request: Request) {
 
         res.cookies.set(
           'raft_user_session',
-          JSON.stringify({ id, email: normalized, status: user.status }),
+          JSON.stringify({
+            id,
+            email: normalized,
+            status: user.status,
+            is_super_admin: user.is_super_admin,
+            issuedAt: Date.now(),
+          }),
           {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',

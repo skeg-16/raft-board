@@ -1,0 +1,17 @@
+# Supabase Local CLI Configuration
+# Project: Otter App (RAFT System)
+
+[auth]
+# Recommended JWT Access Token Expiry (15 to 30 minutes)
+# Default is 3600 (1 hour). Recommended for high security: 900 (15 minutes).
+jwt_expiry = 900
+enable_signup = true
+
+[auth.mfa]
+max_enrolled_factors = 10
+
+[api]
+port = 54321
+schemas = ["public", "auth"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
