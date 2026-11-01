@@ -255,6 +255,7 @@ export async function POST(request: Request) {
         id: foundProfile.id,
         email: normalizedEmail,
         status: foundProfile.status,
+        issuedAt: Date.now(),
       }),
       {
         httpOnly: true,

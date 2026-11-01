@@ -1,18 +1,16 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getStores } from '@/lib/tasks';
 
-// GET /api/admin/users - List all users with security metadata (Super Admins only)
-export async function GET() {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Forbidden: Super Admin access required.' },
-      { status: 403 }
-    );
+// GET /api/admin/users - List all users with security metadata (Super Admins with AAL2 only)
+export async function GET(request: Request) {
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
+
+  const currentProfile = auth.adminProfile!;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =

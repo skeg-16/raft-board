@@ -29,6 +29,7 @@ async function runTests() {
   );
   const saCookie = saConfirmRes.headers.get('set-cookie')?.split(';')[0] || '';
   assert.ok(saCookie, 'Should obtain super admin session cookie');
+  const saHeaders = { Cookie: saCookie, 'x-test-aal': 'aal2', ...testHeaders };
 
   // Setup: Register Member (Pending)
   const memberEmail = `member_audit_${ts}@otter.systems`;
@@ -46,11 +47,10 @@ async function runTests() {
   assert.strictEqual(samSignupRes.status, 200, 'Member signup should succeed');
 
   const pendingRes = await fetch(`${BASE_URL}/api/admin/pending`, {
-    headers: { Cookie: saCookie, ...testHeaders },
+    headers: saHeaders,
   });
   const pendingData = await pendingRes.json();
   const samPending = pendingData.pending?.find((p) => p.email === memberEmail);
-  assert.ok(samPending, 'Sam should be in pending list');
   assert.ok(samPending, 'Sam should be in pending list');
 
   // =========================================================================
@@ -61,7 +61,7 @@ async function runTests() {
   // 1A. Invalid weekday rejected
   const invalidWeekdayRes = await fetch(`${BASE_URL}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({ meeting_weekday: 'Funday' }),
   });
   assert.strictEqual(invalidWeekdayRes.status, 400, 'Invalid weekday should be rejected with HTTP 400');
@@ -72,7 +72,7 @@ async function runTests() {
   // 1B. Invalid meeting time rejected
   const invalidTimeRes = await fetch(`${BASE_URL}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({ meeting_time: '25:99' }),
   });
   assert.strictEqual(invalidTimeRes.status, 400, 'Invalid meeting time should be rejected with HTTP 400');
@@ -83,7 +83,7 @@ async function runTests() {
   // 1C. Valid weekday & time accepted
   const validSettingsRes = await fetch(`${BASE_URL}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({
       meeting_weekday: 'Sunday',
       meeting_time: '11:00 AM',
@@ -108,7 +108,7 @@ async function runTests() {
   // 2A. Approve Member Action
   const approveRes = await fetch(`${BASE_URL}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({
       memberId: samPending.id,
       roleTitle: 'Developer',
@@ -123,7 +123,7 @@ async function runTests() {
   // 2B. Target Edit Action (Executive/Super Admin setting target)
   const targetRes = await fetch(`${BASE_URL}/api/members/${samPending.id}/target`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({ weekly_target_xp: 100 }),
   });
   assert.strictEqual(targetRes.status, 200, 'Target edit should succeed');
@@ -132,7 +132,7 @@ async function runTests() {
   // 2C. Quick Pick Create Action
   const qpRes = await fetch(`${BASE_URL}/api/quick-picks`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({
       category: 'Platforms',
       label: 'Deploy audit logging suite',
@@ -146,7 +146,7 @@ async function runTests() {
   const futureCutoff = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
   const cutoffOverrideRes = await fetch(`${BASE_URL}/api/settings/current-week-cutoff`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({
       new_cutoff_at: futureCutoff,
       confirmed: true,
@@ -159,7 +159,7 @@ async function runTests() {
   // 2E. Super Admin Manual Close Action
   const closeRes = await fetch(`${BASE_URL}/api/tasks/close-week`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({ force: true }),
   });
   assert.strictEqual(closeRes.status, 200, 'Manual close should succeed');
@@ -167,7 +167,7 @@ async function runTests() {
 
   // 2F. Inspect Audit Logs Endpoint
   const logsRes = await fetch(`${BASE_URL}/api/settings/current-week-cutoff`, {
-    headers: { Cookie: saCookie, ...testHeaders },
+    headers: saHeaders,
   });
   assert.strictEqual(logsRes.status, 200, 'Audit logs fetch should succeed');
   const { auditLogs } = await logsRes.json();
@@ -192,7 +192,7 @@ async function runTests() {
   // The close earlier opened a new week. Let's verify that the newly opened week's cutoff
   // dynamically followed the updated settings (Sunday 11:00 AM Manila)!
   const currentSettingsRes = await fetch(`${BASE_URL}/api/settings`, {
-    headers: { Cookie: saCookie, ...testHeaders },
+    headers: saHeaders,
   });
   const currentSettingsData = await currentSettingsRes.json();
   const currentWeek = currentSettingsData.currentWeek;
@@ -212,7 +212,7 @@ async function runTests() {
   // Now change settings to Thursday 3:00 PM and close again
   await fetch(`${BASE_URL}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({
       meeting_weekday: 'Thursday',
       meeting_time: '3:00 PM',
@@ -222,13 +222,13 @@ async function runTests() {
 
   const secondCloseRes = await fetch(`${BASE_URL}/api/tasks/close-week`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: saCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...saHeaders },
     body: JSON.stringify({ force: true }),
   });
   assert.strictEqual(secondCloseRes.status, 200, 'Second close should succeed');
 
   const secondSettingsRes = await fetch(`${BASE_URL}/api/settings`, {
-    headers: { Cookie: saCookie, ...testHeaders },
+    headers: saHeaders,
   });
   const secondWeek = (await secondSettingsRes.json()).currentWeek;
   const secondCutoff = new Date(secondWeek.cutoff_at);

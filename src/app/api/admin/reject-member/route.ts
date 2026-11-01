@@ -1,18 +1,15 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
 
 export async function POST(request: Request) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Unauthorized: Only active Super Admins can reject members.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const currentProfile = auth.adminProfile!;
   const { memberId } = await request.json();
 
   if (!memberId) {
@@ -54,14 +51,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Member not found.' }, { status: 404 });
   }
 
+  // Fail-closed audit logging
+  try {
+    await logAdminAction(currentProfile.id, 'reject_member', {
+      member_id: memberId,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Audit logging failed: ${err instanceof Error ? err.message : 'Unknown error'}. Action aborted.` },
+      { status: 500 }
+    );
+  }
+
   profile.status = 'deactivated';
   profile.active = false;
   profile.updated_at = new Date().toISOString();
   store.set(memberId, profile);
-
-  await logAdminAction(currentProfile.id, 'reject_member', {
-    member_id: memberId,
-  });
 
   return NextResponse.json({ success: true, message: 'Member registration rejected.' });
 }

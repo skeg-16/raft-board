@@ -1,17 +1,15 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
 
 export async function POST(request: Request) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Unauthorized: Only active Super Admins can approve members.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
+
+  const currentProfile = auth.adminProfile!;
 
   const { memberId, roleTitle, roleType, isSuperAdmin, isTreasurer } = await request.json();
 
@@ -59,29 +57,36 @@ export async function POST(request: Request) {
 
   // Local / Test Runtime Store
   const store = getRuntimeUserStore();
-  const profile = store.get(memberId);
+  const member = store.get(memberId);
 
-  if (!profile) {
+  if (!member) {
     return NextResponse.json({ error: 'Member not found.' }, { status: 404 });
   }
 
-  profile.status = 'active';
-  profile.active = true;
-  profile.role_title = roleTitle;
-  profile.role_type = roleType;
-  profile.is_super_admin = Boolean(isSuperAdmin);
-  profile.is_treasurer = Boolean(isTreasurer);
-  profile.updated_at = new Date().toISOString();
+  // Fail-closed audit logging
+  try {
+    await logAdminAction(currentProfile.id, 'approve_member', {
+      member_id: memberId,
+      role_title: roleTitle,
+      role_type: roleType,
+      is_super_admin: Boolean(isSuperAdmin),
+      is_treasurer: Boolean(isTreasurer),
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Audit logging failed: ${err instanceof Error ? err.message : 'Unknown error'}. Action aborted.` },
+      { status: 500 }
+    );
+  }
 
-  store.set(memberId, profile);
-
-  await logAdminAction(currentProfile.id, 'approve_member', {
-    member_id: memberId,
-    role_title: roleTitle,
-    role_type: roleType,
-    is_super_admin: Boolean(isSuperAdmin),
-    is_treasurer: Boolean(isTreasurer),
-  });
+  member.status = 'active';
+  member.active = true;
+  member.role_title = roleTitle;
+  member.role_type = roleType;
+  member.is_super_admin = Boolean(isSuperAdmin);
+  member.is_treasurer = Boolean(isTreasurer);
+  member.updated_at = new Date().toISOString();
+  store.set(memberId, member);
 
   return NextResponse.json({ success: true, message: 'Member approved successfully!' });
 }

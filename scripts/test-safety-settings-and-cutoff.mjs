@@ -29,6 +29,7 @@ async function runSafetyTestSuite() {
     { redirect: 'manual', headers: testHeaders }
   );
   const superAdminCookie = superAdminConfirm.headers.get('set-cookie')?.split(';')[0] || '';
+  const adminHeaders = { Cookie: superAdminCookie, 'x-test-aal': 'aal2', ...testHeaders };
 
   // Setup: Register Normal Member (Alex Lead)
   const leadEmail = `alex_safe_${ts}@otter.systems`;
@@ -44,14 +45,14 @@ async function runSafetyTestSuite() {
     }),
   });
   const pendingRes = await fetch(`${baseUrl}/api/admin/pending`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const pendingData = await pendingRes.json();
   const alexPending = pendingData.pending?.find((p) => p.email === leadEmail);
 
   await fetch(`${baseUrl}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       memberId: alexPending.id,
       roleTitle: 'Backend Lead',
@@ -73,7 +74,7 @@ async function runSafetyTestSuite() {
   console.log('--- Check 1: Settings apply to NEXT week by default; current open week untouched ---');
   // 1a. Fetch initial settings & current week
   const initialSettingsRes = await fetch(`${baseUrl}/api/settings`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const initialData = await initialSettingsRes.json();
   const initialCutoff = initialData.currentWeek.cutoff_at;
@@ -82,7 +83,7 @@ async function runSafetyTestSuite() {
   // 1b. Update settings to a new weekday and time (e.g. Wednesday 3:00 PM)
   const patchSettingsRes = await fetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       meeting_weekday: 'Wednesday',
       meeting_time: '03:00 PM',
@@ -105,7 +106,7 @@ async function runSafetyTestSuite() {
   // 1c. Rejection of cutoff in the past
   const pastCutoffRes = await fetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       new_cutoff_at: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
     }),
@@ -117,7 +118,7 @@ async function runSafetyTestSuite() {
   // Restore settings to Saturday 10:00 AM
   await fetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       meeting_weekday: 'Saturday',
       meeting_time: '10:00 AM',
@@ -149,7 +150,7 @@ async function runSafetyTestSuite() {
   // 2b. Super admin attempts without confirmation -> 400 with "Confirmation required"
   const unconfirmedRes = await fetch(`${baseUrl}/api/settings/current-week-cutoff`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       new_cutoff_at: new Date(Date.now() + 24 * 3600000).toISOString(),
       confirmed: false,
@@ -162,7 +163,7 @@ async function runSafetyTestSuite() {
   // 2c. Super admin attempts with a past timestamp -> 400 with past rejection
   const pastTimeOverrideRes = await fetch(`${baseUrl}/api/settings/current-week-cutoff`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       new_cutoff_at: new Date(Date.now() - 60000).toISOString(), // 1 minute ago
       confirmed: true,
@@ -177,7 +178,7 @@ async function runSafetyTestSuite() {
   const futureCutoff = new Date(Date.now() + 48 * 3600000); // 48 hours in future
   const validOverrideRes = await fetch(`${baseUrl}/api/settings/current-week-cutoff`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       new_cutoff_at: futureCutoff.toISOString(),
       confirmed: true,
@@ -190,7 +191,7 @@ async function runSafetyTestSuite() {
 
   // Verify Audit Log entry was generated
   const auditLogsRes = await fetch(`${baseUrl}/api/settings/current-week-cutoff`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const auditLogsData = await auditLogsRes.json();
   const auditLogFound = auditLogsData.auditLogs?.some(
@@ -224,14 +225,14 @@ async function runSafetyTestSuite() {
   // 3b. Functional verification:
   // When cutoff has passed, calling /api/tasks/assign closes the week via close_week() and targets next week
   const openWeekRes = await fetch(`${baseUrl}/api/settings`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const { currentWeek: activeWeek } = await openWeekRes.json();
   const pastMeetingTime = new Date(new Date(activeWeek.cutoff_at).getTime() + 1000).toISOString();
 
   const assignAtPastCutoffRes = await fetch(`${baseUrl}/api/tasks/assign`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       userId: alexPending.id,
       title: 'Sprint task assigned during meeting close transition',

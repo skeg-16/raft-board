@@ -255,6 +255,17 @@ export async function logAdminAction(
   action: string,
   details: Record<string, any> = {}
 ): Promise<AuditLog> {
+  // Ensure no passwords, TOTP codes, secrets, or tokens are ever recorded
+  const cleanDetails = typeof details === 'object' && details !== null
+    ? JSON.parse(
+        JSON.stringify(details, (k, v) =>
+          /password|passwd|code|totp|secret|token|credential|jwt|cookie|auth_key/i.test(k)
+            ? '[REDACTED]'
+            : v
+        )
+      )
+    : details;
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
     supabaseUrl &&
@@ -267,7 +278,7 @@ export async function logAdminAction(
       .insert({
         user_id: userId,
         action,
-        details,
+        details: cleanDetails,
         created_at: new Date().toISOString(),
       })
       .select('*')
@@ -284,7 +295,7 @@ export async function logAdminAction(
     id: auditLogId,
     user_id: userId,
     action,
-    details,
+    details: cleanDetails,
     created_at: new Date().toISOString(),
   };
   auditLogs.set(auditLogId, entry);

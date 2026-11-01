@@ -1,24 +1,22 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
+import { revokeUserAuthSessions } from '@/lib/security';
 
 // POST /api/admin/users/[id]/force-password-reset
-// Super Admins only. Admins NEVER see or choose passwords.
-// Triggers recovery email and sets must_change_password = true.
+// Super Admins with AAL2 only. Admins NEVER see or choose passwords.
+// Triggers recovery email, revokes existing sessions, and sets must_change_password = true.
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Forbidden: Super Admin access required.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const currentProfile = auth.adminProfile!;
   const { id: targetUserId } = await params;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -51,9 +49,12 @@ export async function POST(
       return NextResponse.json({ error: rpcError.message }, { status: 500 });
     }
 
+    // Revoke real sessions and refresh tokens
+    await revokeUserAuthSessions(targetUserId);
+
     return NextResponse.json({
       success: true,
-      message: 'Password reset link generated and sent to user email. Admin never sees passwords.',
+      message: 'Password reset link generated and sent to user email. All previous sessions revoked.',
     });
   }
 
@@ -82,8 +83,11 @@ export async function POST(
   targetUser.updated_at = new Date().toISOString();
   store.set(targetUserId, targetUser);
 
+  // Revoke real sessions and refresh tokens
+  await revokeUserAuthSessions(targetUserId);
+
   return NextResponse.json({
     success: true,
-    message: 'Password reset triggered successfully. User must choose a new password upon next login.',
+    message: 'Password reset triggered successfully. All previous sessions revoked.',
   });
 }

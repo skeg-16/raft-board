@@ -1,24 +1,22 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
+import { revokeUserAuthSessions } from '@/lib/security';
 
 // POST /api/admin/users/[id]/reset-2fa
-// Super Admin Recovery Path: A second super admin can remove a locked-out admin's 2FA factor.
+// Super Admin Recovery Path: A second super admin with AAL2 can remove a locked-out admin's 2FA factor.
 // An admin CANNOT remove their own 2FA factor via this endpoint.
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Forbidden: Super Admin access required.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const currentProfile = auth.adminProfile!;
   const { id: targetUserId } = await params;
 
   // Recovery protection: Must be performed by a SECOND super admin
@@ -60,6 +58,8 @@ export async function POST(
       // In case factor is already missing
     }
 
+    await revokeUserAuthSessions(targetUserId);
+
     return NextResponse.json({
       success: true,
       message: 'User 2FA factor successfully removed. The admin can now log in with their credentials and will be prompted to re-enroll.',
@@ -92,6 +92,8 @@ export async function POST(
   targetUser.mfa_enrolled_at = null;
   targetUser.updated_at = new Date().toISOString();
   store.set(targetUserId, targetUser);
+
+  await revokeUserAuthSessions(targetUserId);
 
   return NextResponse.json({
     success: true,

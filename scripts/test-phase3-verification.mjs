@@ -31,6 +31,7 @@ async function runVerification() {
     { redirect: 'manual', headers: testHeaders }
   );
   const superAdminCookie = superAdminConfirm.headers.get('set-cookie')?.split(';')[0] || '';
+  const adminHeaders = { Cookie: superAdminCookie, 'x-test-aal': 'aal2', ...testHeaders };
 
   // 2. Executive: Sam CMO (not super admin)
   const execEmail = `sam_cmo_${ts}@otter.systems`;
@@ -46,12 +47,12 @@ async function runVerification() {
     }),
   });
   const pendingRes1 = await fetch(`${baseUrl}/api/admin/pending`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const samPending = (await pendingRes1.json()).pending?.find((p) => p.email === execEmail);
   await fetch(`${baseUrl}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       memberId: samPending.id,
       roleTitle: 'Chief Marketing Officer',
@@ -81,12 +82,12 @@ async function runVerification() {
     }),
   });
   const pendingRes2 = await fetch(`${baseUrl}/api/admin/pending`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const alexPending = (await pendingRes2.json()).pending?.find((p) => p.email === lead1Email);
   await fetch(`${baseUrl}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       memberId: alexPending.id,
       roleTitle: 'Backend Lead',
@@ -116,12 +117,12 @@ async function runVerification() {
     }),
   });
   const pendingRes3 = await fetch(`${baseUrl}/api/admin/pending`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const beatricePending = (await pendingRes3.json()).pending?.find((p) => p.email === lead2Email);
   await fetch(`${baseUrl}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       memberId: beatricePending.id,
       roleTitle: 'Creatives Lead',

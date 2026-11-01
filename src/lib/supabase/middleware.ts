@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isTokenRevoked } from '@/lib/revocation';
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -68,7 +69,23 @@ export async function updateSession(request: NextRequest) {
         const session = JSON.parse(rawVal) as {
           id: string;
           status: string;
+          aal?: string;
+          is_super_admin?: boolean;
+          issuedAt?: number;
         };
+
+        // Revocation Check: If session/token was revoked, reject immediately
+        if (isTokenRevoked(sessionCookie.value, session.id, session.issuedAt)) {
+          if (pathname.startsWith('/api/')) {
+            return NextResponse.json({ error: 'Session has been revoked.' }, { status: 401 });
+          }
+          const url = request.nextUrl.clone();
+          url.pathname = '/login';
+          url.searchParams.set('error', 'session_revoked');
+          const res = NextResponse.redirect(url);
+          res.cookies.delete('raft_user_session');
+          return res;
+        }
 
         const status = session.status || 'pending';
 
@@ -100,6 +117,25 @@ export async function updateSession(request: NextRequest) {
           const res = NextResponse.redirect(url);
           res.cookies.delete('raft_user_session');
           return res;
+        }
+
+        // Super Admin AAL2 Enforcement on /admin/* pages (except enrollment)
+        if (
+          pathname.startsWith('/admin') &&
+          pathname !== '/admin/mfa/enroll' &&
+          session.is_super_admin &&
+          session.aal !== 'aal2'
+        ) {
+          if (pathname.startsWith('/api/')) {
+            return NextResponse.json(
+              { error: 'Forbidden: Super Admin actions require an active AAL2 session (MFA verified).' },
+              { status: 403 }
+            );
+          }
+          const url = request.nextUrl.clone();
+          url.pathname = '/admin/mfa/enroll';
+          url.searchParams.set('error', 'aal2_required');
+          return NextResponse.redirect(url);
         }
 
         if (status === 'active') {
@@ -153,6 +189,16 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (user) {
+    if (isTokenRevoked(user.id)) {
+      await supabase.auth.signOut();
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ error: 'Session has been revoked.' }, { status: 401 });
+      }
+      const url = request.nextUrl.clone();
+      url.pathname = '/login';
+      return NextResponse.redirect(url);
+    }
+
     const { data: profile } = await supabase
       .from('profiles')
       .select('status, is_super_admin')
@@ -190,6 +236,27 @@ export async function updateSession(request: NextRequest) {
       const res = NextResponse.redirect(url);
       res.cookies.delete('raft_user_session');
       return res;
+    }
+
+    // AAL2 enforcement on admin pages for super admins
+    if (
+      pathname.startsWith('/admin') &&
+      pathname !== '/admin/mfa/enroll' &&
+      profile?.is_super_admin
+    ) {
+      const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aalData?.currentLevel !== 'aal2') {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json(
+            { error: 'Forbidden: Super Admin actions require an active AAL2 session (MFA verified).' },
+            { status: 403 }
+          );
+        }
+        const url = request.nextUrl.clone();
+        url.pathname = '/admin/mfa/enroll';
+        url.searchParams.set('error', 'aal2_required');
+        return NextResponse.redirect(url);
+      }
     }
 
     if (status === 'active') {

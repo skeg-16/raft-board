@@ -30,6 +30,7 @@ async function runRefinementsTest() {
     { redirect: 'manual', headers: testHeaders }
   );
   const superAdminCookie = superAdminConfirm.headers.get('set-cookie')?.split(';')[0] || '';
+  const adminHeaders = { Cookie: superAdminCookie, 'x-test-aal': 'aal2', ...testHeaders };
   console.log('Super Admin Cookie obtained successfully.');
 
   // Setup: Register Normal Member (Alex Lead)
@@ -50,7 +51,7 @@ async function runRefinementsTest() {
   }
 
   const pendingRes = await fetch(`${baseUrl}/api/admin/pending`, {
-    headers: { Cookie: superAdminCookie, ...testHeaders },
+    headers: adminHeaders,
   });
   const pendingData = await pendingRes.json();
   const alexPending = pendingData.pending?.find((p) => p.email === leadEmail);
@@ -60,7 +61,7 @@ async function runRefinementsTest() {
 
   const approveRes = await fetch(`${baseUrl}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({
       memberId: alexPending.id,
       roleTitle: 'Backend Lead',

@@ -1,24 +1,22 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
-import { invalidateActiveSessions } from '@/lib/security';
+import { revokeUserAuthSessions } from '@/lib/security';
 import type { Profile } from '@/types/database';
 
-// PATCH /api/admin/users/[id] - Update user role, flags, or status (Super Admins only)
-// ENFORCES LOCKOUT PROTECTION & FAIL-CLOSED AUDIT LOGGING
+// PATCH /api/admin/users/[id] - Update user role, flags, or status (Super Admins with AAL2 only)
+// ENFORCES LOCKOUT PROTECTION, AAL2 REQUIREMENT & FAIL-CLOSED AUDIT LOGGING
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Forbidden: Super Admin access required.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
+
+  const currentProfile = auth.adminProfile!;
 
   const { id: targetUserId } = await params;
   const body = await request.json();
@@ -48,7 +46,7 @@ export async function PATCH(
     }
 
     if (status === 'deactivated') {
-      await invalidateActiveSessions(targetUserId);
+      await revokeUserAuthSessions(targetUserId);
     }
 
     return NextResponse.json({ success: true, message: 'User updated successfully.' });
@@ -139,7 +137,7 @@ export async function PATCH(
   store.set(targetUserId, updatedUser);
 
   if (newValues.status === 'deactivated') {
-    await invalidateActiveSessions(targetUserId);
+    await revokeUserAuthSessions(targetUserId);
   }
 
   return NextResponse.json({

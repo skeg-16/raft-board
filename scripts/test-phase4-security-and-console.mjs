@@ -52,6 +52,7 @@ async function runPhase4Tests() {
   );
   const sa1Cookie = sa1Confirm.headers.get('set-cookie')?.split(';')[0] || '';
   assert.ok(sa1Cookie, 'Super Admin 1 session cookie obtained');
+  const sa1Headers = { Cookie: sa1Cookie, 'x-test-aal': 'aal2', ...testHeaders };
 
   // 2. Super Admin 2 (Railey COO - Bootstrap)
   const sa2Email = `railey_p4_sa2_${ts}@otter.systems`;
@@ -72,6 +73,7 @@ async function runPhase4Tests() {
   );
   const sa2Cookie = sa2Confirm.headers.get('set-cookie')?.split(';')[0] || '';
   assert.ok(sa2Cookie, 'Super Admin 2 session cookie obtained');
+  const sa2Headers = { Cookie: sa2Cookie, 'x-test-aal': 'aal2', ...testHeaders };
 
   // 3. Normal Member (Morgan Lead)
   const memberEmail = `morgan_lead_${ts}@otter.systems`;
@@ -87,7 +89,7 @@ async function runPhase4Tests() {
     }),
   });
   const pendingRes = await fetch(`${BASE_URL}/api/admin/pending`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   const pendingList = (await pendingRes.json()).pending || [];
   const morganPending = pendingList.find((p) => p.email === memberEmail);
@@ -96,7 +98,7 @@ async function runPhase4Tests() {
   // Approve Morgan as Lead
   await fetch(`${BASE_URL}/api/admin/approve-member`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({
       memberId: morganPending.id,
       roleTitle: 'Backend Lead',
@@ -167,7 +169,7 @@ async function runPhase4Tests() {
 
   // Super Admin access succeeds
   const saUsersRes = await fetch(`${BASE_URL}/api/admin/users`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   assert.strictEqual(saUsersRes.status, 200, 'Super admin access to /api/admin/users must succeed (200)');
   const saUsersData = await saUsersRes.json();
@@ -190,7 +192,7 @@ async function runPhase4Tests() {
   // 2A. Admin cannot remove their own admin status
   const selfDemoteRes = await fetch(`${BASE_URL}/api/admin/users/${sa1User.id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({ is_super_admin: false }),
   });
   assert.strictEqual(selfDemoteRes.status, 400, 'Self-demotion must be rejected with 400');
@@ -201,7 +203,7 @@ async function runPhase4Tests() {
   // 2B. Demote SA2 (now SA1 is the only remaining active super admin)
   const demoteSa2Res = await fetch(`${BASE_URL}/api/admin/users/${sa2User.id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({ is_super_admin: false }),
   });
   assert.strictEqual(demoteSa2Res.status, 200, 'Demoting SA2 should succeed when SA1 is active');
@@ -211,7 +213,7 @@ async function runPhase4Tests() {
   // Even if attempted by another route or request, demoting the last super admin must fail
   const demoteLastRes = await fetch(`${BASE_URL}/api/admin/users/${sa1User.id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({ status: 'deactivated' }),
   });
   assert.strictEqual(demoteLastRes.status, 400, 'Deactivating last super admin must be rejected');
@@ -222,7 +224,7 @@ async function runPhase4Tests() {
   // Re-promote SA2 to have 2 active admins for subsequent tests
   await fetch(`${BASE_URL}/api/admin/users/${sa2User.id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({ is_super_admin: true, status: 'active' }),
   });
 
@@ -263,7 +265,7 @@ async function runPhase4Tests() {
 
   // 3C. Inspect login logs via Super Admin endpoint
   const loginLogsRes = await fetch(`${BASE_URL}/api/admin/login-logs`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   assert.strictEqual(loginLogsRes.status, 200, 'Super admin can read login logs');
   const { loginLogs } = await loginLogsRes.json();
@@ -288,7 +290,7 @@ async function runPhase4Tests() {
 
   // 4A. Check active sessions for Morgan
   const sessionsRes = await fetch(`${BASE_URL}/api/admin/users/${morganPending.id}/sessions`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   assert.strictEqual(sessionsRes.status, 200, 'Super admin can view user sessions');
   const { sessions: morganSessions } = await sessionsRes.json();
@@ -298,12 +300,12 @@ async function runPhase4Tests() {
   // 4B. Super admin signs Morgan out everywhere
   const signOutRes = await fetch(`${BASE_URL}/api/admin/users/${morganPending.id}/sign-out-everywhere`, {
     method: 'POST',
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   assert.strictEqual(signOutRes.status, 200, 'Sign out everywhere should succeed');
 
   const postSessionsRes = await fetch(`${BASE_URL}/api/admin/users/${morganPending.id}/sessions`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   const { sessions: emptySessions } = await postSessionsRes.json();
   assert.strictEqual(emptySessions.length, 0, 'Active sessions must be cleared after signing out everywhere');
@@ -314,32 +316,27 @@ async function runPhase4Tests() {
   // =========================================================================
   console.log('\n[Check 5] Verifying 2FA setup and locked-out admin recovery by second admin...');
 
-  // 5A. SA1 enrolls in 2FA
+  // 5A. Custom MFA endpoints are decommissioned (return 410) in favor of Supabase built-in MFA
   const enrollRes = await fetch(`${BASE_URL}/api/auth/mfa/enroll`, {
     method: 'POST',
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
-  assert.strictEqual(enrollRes.status, 200, 'MFA enroll endpoint should succeed');
-  const enrollData = await enrollRes.json();
-  assert.ok(enrollData.secret, 'Must generate TOTP secret');
+  assert.strictEqual(enrollRes.status, 410, 'Custom MFA enroll endpoint must return 410');
 
-  // Verify TOTP code (123456 demo or valid code)
   const verifyRes = await fetch(`${BASE_URL}/api/auth/mfa/verify`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: sa1Cookie, ...testHeaders },
+    headers: { 'Content-Type': 'application/json', ...sa1Headers },
     body: JSON.stringify({
       code: '123456',
-      secret: enrollData.secret,
-      factorId: enrollData.factorId,
     }),
   });
-  assert.strictEqual(verifyRes.status, 200, '2FA verify should succeed');
-  console.log('  ✓ Super Admin 1 enrolled and verified 2FA');
+  assert.strictEqual(verifyRes.status, 410, 'Custom MFA verify endpoint must return 410');
+  console.log('  ✓ Custom MFA endpoints return 410 Gone; native Supabase MFA utilized');
 
   // 5B. SA1 attempts to reset their OWN 2FA factor (Must be blocked)
   const selfResetRes = await fetch(`${BASE_URL}/api/admin/users/${sa1User.id}/reset-2fa`, {
     method: 'POST',
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa1Headers,
   });
   assert.strictEqual(selfResetRes.status, 400, 'Self 2FA reset must be blocked with 400');
   const selfResetData = await selfResetRes.json();
@@ -349,14 +346,14 @@ async function runPhase4Tests() {
   // 5C. SA2 (the SECOND super admin) recovers locked-out SA1
   const recoveryRes = await fetch(`${BASE_URL}/api/admin/users/${sa1User.id}/reset-2fa`, {
     method: 'POST',
-    headers: { Cookie: sa2Cookie, ...testHeaders },
+    headers: sa2Headers,
   });
   assert.strictEqual(recoveryRes.status, 200, 'Second admin 2FA recovery must succeed');
   console.log('  ✓ Second super admin successfully recovered locked-out admin factor');
 
   // 5D. Verify SA1 profile now has mfa_enabled = false
   const updatedSa1Res = await fetch(`${BASE_URL}/api/admin/users`, {
-    headers: { Cookie: sa2Cookie, ...testHeaders },
+    headers: sa2Headers,
   });
   const updatedUsers = (await updatedSa1Res.json()).users;
   const recoveredSa1 = updatedUsers.find((u) => u.id === sa1User.id);
@@ -369,11 +366,12 @@ async function runPhase4Tests() {
 
   const forceResetRes = await fetch(`${BASE_URL}/api/admin/users/${morganPending.id}/force-password-reset`, {
     method: 'POST',
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa2Headers,
   });
   assert.strictEqual(forceResetRes.status, 200, 'Force password reset should succeed');
   const forceResetData = await forceResetRes.json();
-  assert.match(forceResetData.message, /Admin never sees passwords|user must choose/i);
+  assert.match(forceResetData.message, /Password reset (triggered|link)|Admin never sees passwords/i);
+  assert.strictEqual(forceResetData.password, undefined, 'Admin response never contains passwords');
   console.log('  ✓ Password reset triggered safely without exposing passwords');
 
   // =========================================================================
@@ -382,7 +380,7 @@ async function runPhase4Tests() {
   console.log('\n[Check 7] Verifying fail-closed unified audit logging...');
 
   const auditRes = await fetch(`${BASE_URL}/api/settings/current-week-cutoff`, {
-    headers: { Cookie: sa1Cookie, ...testHeaders },
+    headers: sa2Headers,
   });
   const { auditLogs } = await auditRes.json();
   const capturedActions = auditLogs.map((l) => l.action);

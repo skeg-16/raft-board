@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { createClient } from '@/lib/supabase/client';
 import {
   ShieldCheck,
   KeyRound,
@@ -22,6 +23,7 @@ export default function AdminMfaEnrollPage() {
   const [secret, setSecret] = useState<string>('');
   const [uri, setUri] = useState<string>('');
   const [factorId, setFactorId] = useState<string>('');
+  const [qrCodeSvg, setQrCodeSvg] = useState<string>('');
   const [code, setCode] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -32,14 +34,22 @@ export default function AdminMfaEnrollPage() {
       try {
         setLoading(true);
         setError(null);
-        const res = await fetch('/api/auth/mfa/enroll', { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to initiate 2FA enrollment.');
+        const supabase = createClient();
+
+        // Built-in Supabase MFA enrollment (TOTP)
+        const { data, error: enrollError } = await supabase.auth.mfa.enroll({
+          factorType: 'totp',
+          friendlyName: 'Raft Board Authenticator',
+        });
+
+        if (enrollError || !data) {
+          throw new Error(enrollError?.message || 'Failed to initiate 2FA enrollment.');
         }
-        setSecret(data.secret);
-        setUri(data.uri);
-        setFactorId(data.factorId);
+
+        setFactorId(data.id);
+        setSecret(data.totp?.secret || '');
+        setUri(data.totp?.uri || '');
+        setQrCodeSvg(data.totp?.qr_code || '');
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Enrollment failed');
       } finally {
@@ -66,19 +76,32 @@ export default function AdminMfaEnrollPage() {
     try {
       setVerifying(true);
       setError(null);
-      const res = await fetch('/api/auth/mfa/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, secret, factorId }),
+      const supabase = createClient();
+
+      // Step 1: Challenge
+      const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
+        factorId,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Verification failed.');
+
+      if (challengeError || !challengeData) {
+        throw new Error(challengeError?.message || 'Failed to create MFA challenge.');
       }
+
+      // Step 2: Verify TOTP code
+      const { data: verifyData, error: verifyError } = await supabase.auth.mfa.verify({
+        factorId,
+        challengeId: challengeData.id,
+        code: code.trim(),
+      });
+
+      if (verifyError) {
+        throw new Error(verifyError.message || 'Verification failed. Please check your authenticator code.');
+      }
+
       setSuccess(true);
       setTimeout(() => {
         router.push('/admin/users');
-      }, 1500);
+      }, 1200);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed');
     } finally {
@@ -101,102 +124,105 @@ export default function AdminMfaEnrollPage() {
           </p>
         </div>
 
-        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+        <div className="bg-white py-8 px-6 shadow-xl shadow-slate-200/50 rounded-3xl border border-slate-200/80 sm:px-10">
           {error && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <div className="p-3.5 mb-6 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
               <span>{error}</span>
             </div>
           )}
 
-          {success ? (
-            <div className="text-center py-6 space-y-3">
-              <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
-                <CheckCircle2 className="w-6 h-6" />
-              </div>
-              <h3 className="font-bold text-slate-900">2FA Verified Successfully!</h3>
-              <p className="text-xs text-slate-500">
-                Your account is now secured with two-factor authentication. Redirecting to admin console...
-              </p>
+          {success && (
+            <div className="p-4 mb-6 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+              <span>Two-factor authentication successfully enabled! Redirecting to console...</span>
             </div>
-          ) : loading ? (
-            <div className="py-12 text-center text-xs text-slate-400">
+          )}
+
+          {loading ? (
+            <div className="py-12 text-center text-slate-400 text-sm">
               <div className="w-6 h-6 border-2 border-sky-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-              <span>Generating authenticator secret...</span>
+              <span>Generating Supabase MFA TOTP keys...</span>
             </div>
           ) : (
-            <div className="space-y-5">
-              {/* Step 1: App instructions */}
-              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-2">
-                <div className="flex items-center gap-2 font-bold text-slate-900">
-                  <Smartphone className="w-4 h-4 text-sky-600" />
-                  <span>1. Open your Authenticator App</span>
+            <form onSubmit={handleVerify} className="space-y-6">
+              {/* Step 1: Add to Authenticator */}
+              <div className="p-4 rounded-2xl bg-sky-50/70 border border-sky-100 text-slate-800">
+                <div className="flex items-center gap-2 mb-2">
+                  <Smartphone className="w-4 h-4 text-sky-700" />
+                  <span className="text-xs font-bold text-sky-950 uppercase tracking-wider">
+                    1. Open your Authenticator App
+                  </span>
                 </div>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
+                <p className="text-xs text-slate-600 mb-3">
                   Use Google Authenticator, Authy, 1Password, or any standard TOTP app. Add a new account by manually entering this secret key:
                 </p>
-                <div className="flex items-center gap-2 pt-1">
-                  <code className="flex-1 px-3 py-2 rounded-xl bg-white border border-slate-200 font-mono text-xs font-bold text-slate-800 tracking-wider text-center select-all">
+
+                <div className="flex items-center gap-2 bg-white p-2 rounded-xl border border-sky-200/80">
+                  <code className="flex-1 font-mono text-sm tracking-wider font-bold text-slate-800 text-center truncate select-all">
                     {secret}
                   </code>
                   <button
                     type="button"
                     onClick={handleCopySecret}
-                    className="p-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 transition-colors shrink-0"
+                    className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors"
                     title="Copy Secret"
                   >
-                    {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                    {copied ? (
+                      <Check className="w-4 h-4 text-emerald-600" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
                   </button>
                 </div>
               </div>
 
-              {/* Step 2: Verification Code Form */}
-              <form onSubmit={handleVerify} className="space-y-3.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-800 mb-1">
-                    2. Enter 6-digit verification code
-                  </label>
+              {/* Step 2: Verification Code Input */}
+              <div>
+                <label className="block text-xs font-bold text-slate-800 mb-2">
+                  2. Enter 6-digit verification code
+                </label>
+                <div className="relative">
                   <input
                     type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
                     maxLength={6}
+                    pattern="\d{6}"
                     placeholder="e.g. 123456"
                     value={code}
                     onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-center font-mono text-lg font-bold tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
-                    autoFocus
+                    className="w-full text-center tracking-[0.3em] font-mono text-lg font-bold py-2.5 px-4 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all placeholder:font-normal placeholder:tracking-normal placeholder:text-slate-400"
+                    required
                   />
-                  <p className="text-[10px] text-slate-400 mt-1 text-center">
-                    (Tip: In local testing, standard TOTP algorithms or test code 123456 are supported)
-                  </p>
                 </div>
+                <p className="text-[11px] text-slate-400 mt-1.5 text-center">
+                  (Tip: Enter the 6-digit code currently shown in your authenticator app)
+                </p>
+              </div>
 
-                <button
-                  type="submit"
-                  disabled={verifying || code.length !== 6}
-                  className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all shadow-sm shadow-sky-600/20 disabled:opacity-50 flex items-center justify-center gap-1.5"
-                >
-                  {verifying ? (
-                    <span>Verifying Code...</span>
-                  ) : (
-                    <>
-                      <span>Enable 2FA & Access Console</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
-                </button>
-              </form>
+              <button
+                type="submit"
+                disabled={verifying || code.length !== 6 || success}
+                className="w-full py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-sm shadow-md shadow-sky-600/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              >
+                {verifying ? (
+                  <span>Verifying Code...</span>
+                ) : (
+                  <>
+                    <span>Enable 2FA & Access Console</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
 
-              <div className="pt-3 border-t border-slate-100 text-center">
+              <div className="pt-2 text-center">
                 <Link
                   href="/admin/users"
-                  className="text-xs text-slate-500 hover:text-slate-800 transition-colors"
+                  className="text-xs font-medium text-slate-500 hover:text-slate-800 transition-colors"
                 >
                   ← Back to Admin Console
                 </Link>
               </div>
-            </div>
+            </form>
           )}
         </div>
       </div>

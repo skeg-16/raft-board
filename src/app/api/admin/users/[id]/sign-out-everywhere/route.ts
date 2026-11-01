@@ -1,24 +1,21 @@
 import { NextResponse } from 'next/server';
-import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
+import { requireSuperAdminAal2, getRuntimeUserStore } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAdminAction } from '@/lib/tasks';
-import { invalidateActiveSessions } from '@/lib/security';
+import { revokeUserAuthSessions } from '@/lib/security';
 
 // POST /api/admin/users/[id]/sign-out-everywhere
-// Super Admins only. Invalidate all active sessions for the user globally.
+// Super Admins with AAL2 only. Revokes all real Supabase Auth sessions and refresh tokens globally.
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const currentProfile = await getCurrentProfile();
-
-  if (!currentProfile || !currentProfile.is_super_admin || currentProfile.status !== 'active') {
-    return NextResponse.json(
-      { error: 'Forbidden: Super Admin access required.' },
-      { status: 403 }
-    );
+  const auth = await requireSuperAdminAal2(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const currentProfile = auth.adminProfile!;
   const { id: targetUserId } = await params;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -38,11 +35,11 @@ export async function POST(
       return NextResponse.json({ error: rpcError.message }, { status: 500 });
     }
 
-    await invalidateActiveSessions(targetUserId);
+    await revokeUserAuthSessions(targetUserId);
 
     return NextResponse.json({
       success: true,
-      message: 'User signed out everywhere. All active sessions invalidated.',
+      message: 'User signed out everywhere. All active sessions and refresh tokens revoked.',
     });
   }
 
@@ -67,10 +64,11 @@ export async function POST(
     );
   }
 
-  await invalidateActiveSessions(targetUserId);
+  // Revoke real sessions and refresh tokens
+  await revokeUserAuthSessions(targetUserId);
 
   return NextResponse.json({
     success: true,
-    message: 'User signed out everywhere. All active sessions invalidated.',
+    message: 'User signed out everywhere. All active sessions and refresh tokens revoked.',
   });
 }

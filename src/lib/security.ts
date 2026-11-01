@@ -1,20 +1,54 @@
 import crypto from 'crypto';
 import { getStores } from '@/lib/tasks';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { getRevocationStore, revokeToken, isTokenRevoked } from '@/lib/revocation';
 import type { LoginLog, ActiveSession } from '@/types/database';
 
-// Anonymize IP address: SHA-256 hash or mask last octet to protect user privacy
+export { revokeToken, isTokenRevoked, getRevocationStore };
+
+/**
+ * Anonymize IP address: HMAC-SHA256 using a server-only secret.
+ * NEVER uses plain SHA-256 or unkeyed hashes.
+ */
 export function anonymizeIp(ip?: string | null): string {
-  if (!ip || ip === 'unknown') return '0.0.0.***';
-  // If standard IPv4, truncate the last segment e.g. 192.168.1.***
-  if (ip.includes('.')) {
-    const parts = ip.split('.');
-    if (parts.length === 4) {
-      return `${parts[0]}.${parts[1]}.${parts[2]}.***`;
-    }
+  if (!ip || ip === 'unknown') return '0.0.0.0-unknown';
+  const cleanIp = ip.trim();
+  const secret =
+    process.env.IP_HASH_SECRET ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    'otter-raft-default-server-hmac-secret-never-plain';
+
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(cleanIp);
+  return hmac.digest('hex').substring(0, 16);
+}
+
+/**
+ * Deep sanitization helper: ensures no logs, errors, or audit rows
+ * ever contain passwords, TOTP codes, secrets, or tokens.
+ */
+export function sanitizeSensitiveData(input: any): any {
+  if (!input) return input;
+  if (typeof input === 'string') {
+    return input
+      .replace(/bearer\s+[a-zA-Z0-9\-_.]+/gi, 'Bearer [REDACTED]')
+      .replace(/eyJ[a-zA-Z0-9\-_.]+/g, '[REDACTED_JWT]');
   }
-  // Otherwise SHA-256 hash
-  return crypto.createHash('sha256').update(ip + '-raft-salt').digest('hex').substring(0, 16);
+  if (Array.isArray(input)) {
+    return input.map((item) => sanitizeSensitiveData(item));
+  }
+  if (typeof input === 'object' && input !== null) {
+    const sanitized: Record<string, any> = {};
+    for (const [key, val] of Object.entries(input)) {
+      if (/password|passwd|code|totp|secret|token|credential|jwt|cookie|auth_key/i.test(key)) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = sanitizeSensitiveData(val);
+      }
+    }
+    return sanitized;
+  }
+  return input;
 }
 
 // User-Agent parser for human-friendly device/browser descriptions
@@ -48,6 +82,8 @@ export async function recordLoginLog(params: {
 }): Promise<LoginLog> {
   const ipHash = anonymizeIp(params.ip);
   const deviceBrowser = parseUserAgent(params.userAgent);
+  const sanitizedReason = params.failureReason ? sanitizeSensitiveData(params.failureReason) : null;
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
     supabaseUrl &&
@@ -64,7 +100,7 @@ export async function recordLoginLog(params: {
         ip_hash: ipHash,
         user_agent: params.userAgent || null,
         device_browser: deviceBrowser,
-        failure_reason: params.failureReason || null,
+        failure_reason: sanitizedReason,
         created_at: new Date().toISOString(),
       })
       .select('*')
@@ -84,7 +120,7 @@ export async function recordLoginLog(params: {
     ip_hash: ipHash,
     user_agent: params.userAgent || null,
     device_browser: deviceBrowser,
-    failure_reason: params.failureReason || null,
+    failure_reason: sanitizedReason,
     created_at: new Date().toISOString(),
   };
 
@@ -96,11 +132,20 @@ export async function recordLoginLog(params: {
 export async function createActiveSession(
   userId: string,
   ip: string,
-  userAgent?: string | null
+  userAgent?: string | null,
+  sessionToken?: string
 ): Promise<ActiveSession> {
   const ipHash = anonymizeIp(ip);
   const deviceBrowser = parseUserAgent(userAgent);
   const sessionId = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+  if (sessionToken) {
+    const { userActiveTokens } = getRevocationStore();
+    if (!userActiveTokens.has(userId)) {
+      userActiveTokens.set(userId, new Set());
+    }
+    userActiveTokens.get(userId)!.add(sessionToken);
+  }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
@@ -140,7 +185,55 @@ export async function createActiveSession(
   return session;
 }
 
-// Invalidate / Sign out user everywhere
+/**
+ * Revoke REAL Supabase Auth sessions, refresh tokens, and active_sessions table.
+ * Used by "Sign Out Everywhere", "Deactivate User", and "Force Password Reset".
+ */
+export async function revokeUserAuthSessions(userId: string): Promise<void> {
+  const revocationTimestamp = Date.now();
+  const { userRevocations, userActiveTokens, revokedTokens } = getRevocationStore();
+  userRevocations.set(userId, revocationTimestamp);
+
+  // Invalidate any active tokens registered for this user
+  if (userActiveTokens.has(userId)) {
+    const tokens = userActiveTokens.get(userId)!;
+    for (const t of tokens) {
+      revokedTokens.add(t);
+    }
+    userActiveTokens.delete(userId);
+  }
+
+  // Clear active_sessions table in database / store
+  await invalidateActiveSessions(userId);
+
+  // Revoke in real Supabase Auth
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    try {
+      await (admin as any).rpc('admin_revoke_user_sessions', { p_user_id: userId });
+    } catch {
+      try {
+        await (admin.from('auth.sessions') as any).delete().eq('user_id', userId);
+      } catch {
+        // Table may be in protected schema
+      }
+    }
+    try {
+      await admin.auth.admin.signOut(userId, 'global');
+    } catch {
+      // Ignore if not present
+    }
+  }
+}
+
+
+// Invalidate / Sign out user everywhere (active_sessions table)
 export async function invalidateActiveSessions(userId: string): Promise<void> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
@@ -151,11 +244,6 @@ export async function invalidateActiveSessions(userId: string): Promise<void> {
   if (isConfigured) {
     const admin = createAdminClient();
     await (admin.from('active_sessions') as any).delete().eq('user_id', userId);
-    try {
-      await admin.auth.admin.signOut(userId, 'global');
-    } catch {
-      // Ignore if auth user not found
-    }
   }
 
   const { activeSessions } = getStores();
