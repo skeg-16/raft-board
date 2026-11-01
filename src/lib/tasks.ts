@@ -86,6 +86,14 @@ export function calculateLevelInfo(totalXP: number): LevelInfo {
   };
 }
 
+export interface AuditLog {
+  id: string;
+  user_id: string;
+  action: string;
+  details: Record<string, any>;
+  created_at: string;
+}
+
 // In-Memory mock state for local / test environment
 declare global {
   // eslint-disable-next-line no-var
@@ -102,6 +110,8 @@ declare global {
   var __raft_week_scores: Map<string, WeekScore> | undefined;
   // eslint-disable-next-line no-var
   var __raft_month_scores: Map<string, MonthScore> | undefined;
+  // eslint-disable-next-line no-var
+  var __raft_audit_logs: Map<string, AuditLog> | undefined;
 }
 
 export function getStores() {
@@ -122,6 +132,7 @@ export function getStores() {
   if (!globalThis.__raft_rest_modes) globalThis.__raft_rest_modes = new Map();
   if (!globalThis.__raft_week_scores) globalThis.__raft_week_scores = new Map();
   if (!globalThis.__raft_month_scores) globalThis.__raft_month_scores = new Map();
+  if (!globalThis.__raft_audit_logs) globalThis.__raft_audit_logs = new Map();
 
   return {
     weeks: globalThis.__raft_weeks,
@@ -131,6 +142,7 @@ export function getStores() {
     restModes: globalThis.__raft_rest_modes,
     weekScores: globalThis.__raft_week_scores,
     monthScores: globalThis.__raft_month_scores,
+    auditLogs: globalThis.__raft_audit_logs,
   };
 }
 
@@ -191,7 +203,9 @@ export function parseWeekday(dayName?: string): number {
   return map[dayName?.trim().toLowerCase() || 'saturday'] ?? 6;
 }
 
-// Immediately updates current open week cutoff so it follows new meeting time & weekday with zero cron schedule change
+// Updates system settings (meeting day/time/tz).
+// RULE: Changes apply starting from the NEXT week by default.
+// The current open week's cutoff is NEVER altered, locked, or closed prematurely by settings updates.
 export async function updateSystemSettings(updates: Partial<Settings>): Promise<{ settings: Settings; currentWeek: Week }> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
@@ -223,37 +237,113 @@ export async function updateSystemSettings(updates: Partial<Settings>): Promise<
     updatedSettings = inMemorySettings;
   }
 
-  // Update cutoff_at for currently open week based on updated meeting_weekday and meeting_time
-  const tzOffsetHours = 8;
-  const utc = Date.now() + new Date().getTimezoneOffset() * 60000;
-  const localNow = new Date(utc + 3600000 * tzOffsetHours);
-  const targetDay = parseWeekday(updatedSettings.meeting_weekday);
-  const currentDay = localNow.getUTCDay();
-  const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(updatedSettings.meeting_time);
-
-  let targetYear = localNow.getUTCFullYear();
-  let targetMonth = localNow.getUTCMonth();
-  let targetDate = localNow.getUTCDate();
-
-  if (currentDay === targetDay) {
-    // Cutoff date is today at meeting time.
-    // If meeting time has already passed today, cutoff is set to today in the past (locks week immediately).
-  } else {
-    let daysUntil = (targetDay - currentDay + 7) % 7;
-    if (daysUntil === 0) daysUntil = 7;
-    targetDate += daysUntil;
-  }
-
-  const cutoffLocal = new Date(Date.UTC(targetYear, targetMonth, targetDate, meetingHour, meetingMinute, 0));
-  const newCutoff = new Date(cutoffLocal.getTime() - 3600000 * tzOffsetHours);
-
+  // Preserve the current open week's cutoff completely intact.
+  // The new settings will automatically be used by close_week() when opening the next week.
   const currentWeek = await getCurrentWeek();
-  currentWeek.cutoff_at = newCutoff.toISOString();
-
-  const { weeks } = getStores();
-  weeks.set(currentWeek.id, currentWeek);
 
   return { settings: updatedSettings, currentWeek };
+}
+
+// Separate super admin action to explicitly change the current week's cutoff.
+// Requires explicit confirmation and creates an audit log entry.
+// Strictly rejects any timestamp that has already passed.
+export async function updateCurrentWeekCutoff(
+  userId: string,
+  newCutoffAt: string,
+  confirmed: boolean,
+  reason?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  currentWeek: Week;
+  auditLogId: string;
+}> {
+  if (confirmed !== true) {
+    throw new Error('Confirmation required: Changing the current week cutoff requires explicit confirmation.');
+  }
+
+  const targetDate = new Date(newCutoffAt);
+  if (isNaN(targetDate.getTime())) {
+    throw new Error('Invalid cutoff date format.');
+  }
+
+  if (targetDate.getTime() <= Date.now()) {
+    throw new Error('Cannot set cutoff in the past. New cutoff must be in the future.');
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data, error } = await (admin as any).rpc('update_current_week_cutoff', {
+      p_user_id: userId,
+      p_new_cutoff: targetDate.toISOString(),
+      p_confirmed: confirmed,
+      p_reason: reason || null,
+    });
+    if (error) throw new Error(error.message);
+    const currentWeek = await getCurrentWeek();
+    return {
+      success: true,
+      message: 'Current week cutoff successfully updated.',
+      currentWeek,
+      auditLogId: data.audit_log_id,
+    };
+  }
+
+  // Local in-memory fallback
+  const { weeks, auditLogs } = getStores();
+  const currentWeek = await getCurrentWeek();
+  const oldCutoff = currentWeek.cutoff_at;
+  currentWeek.cutoff_at = targetDate.toISOString();
+  weeks.set(currentWeek.id, currentWeek);
+
+  const auditLogId = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  auditLogs.set(auditLogId, {
+    id: auditLogId,
+    user_id: userId,
+    action: 'change_current_week_cutoff',
+    details: {
+      week_id: currentWeek.id,
+      old_cutoff: oldCutoff,
+      new_cutoff: targetDate.toISOString(),
+      reason: reason || 'Manual super admin adjustment',
+    },
+    created_at: new Date().toISOString(),
+  });
+
+  return {
+    success: true,
+    message: 'Current week cutoff successfully updated.',
+    currentWeek,
+    auditLogId,
+  };
+}
+
+export async function getAuditLogs(limit = 50): Promise<AuditLog[]> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data } = await (admin.from('audit_logs') as any)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    return (data as AuditLog[]) || [];
+  }
+
+  const { auditLogs } = getStores();
+  return Array.from(auditLogs.values())
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
 }
 
 // Calculate Week boundaries strictly based on database settings
@@ -345,16 +435,10 @@ export async function getCurrentWeek(): Promise<Week> {
     if (!error && created) return created as Week;
   }
 
-  // Local store fallback
+  // Local store fallback: preserve current open week's cutoff completely intact
   const { weeks } = getStores();
   for (const w of weeks.values()) {
     if (w.is_current) {
-      // Ensure open week's cutoff dynamically reflects latest settings
-      const { cutoffAt: latestCutoff } = deriveWeekBoundaries(settings);
-      if (w.cutoff_at !== latestCutoff.toISOString()) {
-        w.cutoff_at = latestCutoff.toISOString();
-        weeks.set(w.id, w);
-      }
       return w;
     }
   }

@@ -1,8 +1,10 @@
 import Link from 'next/link';
 import { getCurrentProfile, getSystemSettings } from '@/lib/auth';
+import { getCurrentWeek } from '@/lib/tasks';
 import { RoleBadge } from '@/components/RoleBadge';
 import { SignOutButton } from '@/components/SignOutButton';
 import { ChangePasswordForm } from '@/components/ChangePasswordForm';
+import { MeetingSettingsForm } from '@/components/MeetingSettingsForm';
 import {
   Settings as SettingsIcon,
   User,
@@ -17,6 +19,7 @@ import {
 export default async function SettingsPage() {
   const profile = await getCurrentProfile();
   const settings = await getSystemSettings();
+  const currentWeek = await getCurrentWeek();
 
   return (
     <div className="p-4 space-y-4">
@@ -116,42 +119,12 @@ export default async function SettingsPage() {
       {/* Change Password Form */}
       <ChangePasswordForm />
 
-      {/* System Cadence Settings */}
-      <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-sky-600" />
-            <h2 className="text-sm font-bold text-slate-900 font-display">
-              Meeting & Timezone Cadence
-            </h2>
-          </div>
-          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Database Setting
-          </span>
-        </div>
-
-        <div className="space-y-2.5 pt-1 text-xs">
-          <div className="flex items-center justify-between py-1 border-b border-slate-100">
-            <span className="text-slate-500">Weekly Meeting Day</span>
-            <span className="font-bold text-slate-800">{settings.meeting_weekday}</span>
-          </div>
-
-          <div className="flex items-center justify-between py-1 border-b border-slate-100">
-            <span className="text-slate-500">Meeting Time</span>
-            <span className="font-bold text-slate-800">{settings.meeting_time}</span>
-          </div>
-
-          <div className="flex items-center justify-between py-1 border-b border-slate-100">
-            <span className="text-slate-500">Timezone</span>
-            <span className="font-bold text-slate-800">{settings.timezone}</span>
-          </div>
-
-          <div className="flex items-center justify-between py-1">
-            <span className="text-slate-500">Registration Mode</span>
-            <span className="font-semibold text-sky-700">Self-Service with Team Join Code</span>
-          </div>
-        </div>
-      </div>
+      {/* Meeting Cadence & Cutoff Management */}
+      <MeetingSettingsForm
+        initialSettings={settings}
+        initialWeek={currentWeek}
+        isSuperAdmin={profile?.is_super_admin === true}
+      />
 
       {/* PWA & Install Guide */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">

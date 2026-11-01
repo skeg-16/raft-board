@@ -128,28 +128,39 @@ async function runRefinementsTest() {
   if (!check2Pass) throw new Error('Check 2 failed');
 
   // ==============================================================================
-  // Check 3: Settings meeting_time change updates next cutoff with no cron change
+  // Check 3: Settings change applies to next week (current preserved); separate action modifies current
   // ==============================================================================
-  console.log('--- Check 3: Settings meeting_time update dynamically adjusts next cutoff ---');
+  console.log('--- Check 3: Settings apply to next week by default; separate action modifies current ---');
   // Fetch initial settings & week
   const initialSettingsRes = await fetch(`${baseUrl}/api/settings`, {
     headers: { Cookie: superAdminCookie, ...testHeaders },
   });
   const initialData = await initialSettingsRes.json();
-  const initialCutoff = new Date(initialData.currentWeek.cutoff_at);
+  const initialCutoff = initialData.currentWeek.cutoff_at;
 
-  // Update meeting_time to '02:30 PM' (14:30)
+  // 3a. Update meeting_time to '02:30 PM' (14:30) via settings endpoint
   const updateSettingsRes = await fetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
     body: JSON.stringify({ meeting_time: '02:30 PM' }),
   });
   const updatedData = await updateSettingsRes.json();
-  const newCutoff = new Date(updatedData.currentWeek.cutoff_at);
+  const currentWeekPreserved = updatedData.currentWeek.cutoff_at === initialCutoff;
+  const settingsUpdated = updatedData.settings.meeting_time === '02:30 PM';
 
-  // Cutoff hours in UTC should have shifted by 4.5 hours (10:00 -> 14:30)
-  const cutoffDiffHours = (newCutoff.getTime() - initialCutoff.getTime()) / (1000 * 60 * 60);
-  const cutoffFollowed = cutoffDiffHours === 4.5;
+  // 3b. Use separate action to explicitly modify current week cutoff
+  const futureOverride = new Date(Date.now() + 24 * 3600000).toISOString();
+  const overrideRes = await fetch(`${baseUrl}/api/settings/current-week-cutoff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: superAdminCookie, ...testHeaders },
+    body: JSON.stringify({
+      new_cutoff_at: futureOverride,
+      confirmed: true,
+      reason: 'Scheduled team demo extension',
+    }),
+  });
+  const overrideJson = await overrideRes.json();
+  const overrideSucceeded = overrideRes.status === 200 && overrideJson.currentWeek.cutoff_at === futureOverride;
 
   // Verify cron schedule in vercel.json and migration was NOT changed
   const cronUnchanged = vercelCron?.schedule === '0 2 * * *' && hasPgCronSchedule;
@@ -161,8 +172,8 @@ async function runRefinementsTest() {
     body: JSON.stringify({ meeting_time: '10:00 AM' }),
   });
 
-  const check3Pass = updateSettingsRes.status === 200 && cutoffFollowed && cronUnchanged;
-  console.log(`Check 3 Result: ${check3Pass ? 'PASS' : 'FAIL'} (Cutoff shifted by +4.5h to 14:30: ${cutoffFollowed}, cron schedule unchanged: ${cronUnchanged})\n`);
+  const check3Pass = updateSettingsRes.status === 200 && currentWeekPreserved && settingsUpdated && overrideSucceeded && cronUnchanged;
+  console.log(`Check 3 Result: ${check3Pass ? 'PASS' : 'FAIL'} (Current week preserved by settings: ${currentWeekPreserved}, override action succeeded: ${overrideSucceeded}, cron schedule unchanged: ${cronUnchanged})\n`);
   if (!check3Pass) throw new Error('Check 3 failed');
 
   // ==============================================================================

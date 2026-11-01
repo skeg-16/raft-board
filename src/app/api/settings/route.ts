@@ -16,7 +16,8 @@ export async function GET() {
 }
 
 // PATCH /api/settings - Update system settings (Super Admins only)
-// Automatically updates the open week's cutoff to follow new meeting time with zero cron change
+// RULE: Changes apply starting from the NEXT week by default.
+// Must never alter or lock the current open week. Cutoffs in the past are rejected.
 export async function PATCH(request: Request) {
   const profile = await getCurrentProfile();
   if (!profile || profile.status !== 'active') {
@@ -31,7 +32,19 @@ export async function PATCH(request: Request) {
   }
 
   const body = await request.json();
-  const { meeting_weekday, meeting_time, timezone } = body;
+  const { meeting_weekday, meeting_time, timezone, cutoff_at, new_cutoff_at } = body;
+
+  // Safety check: a cutoff in the past must be rejected
+  const requestedCutoff = cutoff_at || new_cutoff_at;
+  if (requestedCutoff) {
+    const targetDate = new Date(requestedCutoff);
+    if (!isNaN(targetDate.getTime()) && targetDate.getTime() <= Date.now()) {
+      return NextResponse.json(
+        { error: 'Cannot set cutoff in the past. New cutoff must be in the future.' },
+        { status: 400 }
+      );
+    }
+  }
 
   const result = await updateSystemSettings({
     meeting_weekday,
@@ -43,6 +56,6 @@ export async function PATCH(request: Request) {
     success: true,
     settings: result.settings,
     currentWeek: result.currentWeek,
-    message: 'Settings updated successfully. Current week cutoff updated to match new meeting time.',
+    message: 'Settings updated successfully. New meeting schedule applies starting from next week. Current week cutoff is preserved.',
   });
 }
