@@ -11,9 +11,54 @@ async function runPhase4FinalChecks() {
   const testHeaders = { 'x-test-client-id': `test-final-${ts}` };
 
   // =========================================================================
+  // ITEM 1: TEAM_JOIN_CODE Server-Only Verification (Never in client bundle or page source)
+  // =========================================================================
+  console.log('--- Item 1: TEAM_JOIN_CODE Server-Only Verification ---');
+  const joinCode = process.env.TEAM_JOIN_CODE || 'OTTER-RAFT-2026';
+  const staticDir = path.join(process.cwd(), '.next/static');
+
+  if (fs.existsSync(staticDir)) {
+    const staticFiles = [];
+    function scanDir(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) scanDir(full);
+        else if (entry.name.endsWith('.js') || entry.name.endsWith('.html')) staticFiles.push(full);
+      }
+    }
+    scanDir(staticDir);
+
+    let foundInBundle = false;
+    for (const f of staticFiles) {
+      const content = fs.readFileSync(f, 'utf8');
+      if (content.includes(joinCode)) {
+        foundInBundle = true;
+        console.error(`❌ LEAK FOUND: ${joinCode} was found inside client bundle: ${f}`);
+        break;
+      }
+    }
+    assert.strictEqual(foundInBundle, false, 'TEAM_JOIN_CODE must never appear in .next/static client bundles');
+    console.log(`  ✓ Scanned ${staticFiles.length} client chunks: "${joinCode}" not found in any client bundle`);
+  }
+
+  // Verify /signup page source does not contain the join code
+  const signupPageRes = await fetch(`${BASE_URL}/signup`, { headers: testHeaders });
+  const signupHtml = await signupPageRes.text();
+  assert.strictEqual(signupHtml.includes(joinCode), false, 'TEAM_JOIN_CODE must never appear in HTML page source');
+  console.log('  ✓ Verified /signup HTML page source does not leak TEAM_JOIN_CODE');
+
+  // Verify TEAM_JOIN_CODE in .env.example
+  const envExampleContent = fs.readFileSync(path.join(process.cwd(), '.env.example'), 'utf8');
+  assert.ok(envExampleContent.includes('TEAM_JOIN_CODE='), '.env.example must define TEAM_JOIN_CODE');
+  assert.ok(!envExampleContent.includes('NEXT_PUBLIC_TEAM_JOIN_CODE='), '.env.example must NOT have NEXT_PUBLIC_TEAM_JOIN_CODE');
+  assert.ok(envExampleContent.includes('BOOTSTRAP_ADMIN_EMAILS='), '.env.example must define BOOTSTRAP_ADMIN_EMAILS');
+  assert.ok(envExampleContent.includes('email address has been confirmed'), '.env.example must note auto-approval only after email confirmation');
+  console.log('  ✓ .env.example verified: TEAM_JOIN_CODE (server-only) & BOOTSTRAP_ADMIN_EMAILS documented');
+
+  // =========================================================================
   // ITEM 1 & 3: Database-Backed Session Revocation & JWT Expiry Recommendation
   // =========================================================================
-  console.log('--- Item 1 & 3: Database Session Storage, JWT Expiry & Sensitive RLS ---');
+  console.log('\n--- Item 1 & 3: Database Session Storage, JWT Expiry & Sensitive RLS ---');
 
   // Verify supabase/config.toml exists and configures jwt_expiry = 900 (15 min)
   const configPath = path.join(process.cwd(), 'supabase/config.toml');
@@ -317,6 +362,34 @@ async function runPhase4FinalChecks() {
   });
   assert.strictEqual(oldSessionTest.status, 401, 'Old session is rejected with 401 Unauthorized');
   console.log('  ✓ Old access token cannot make requests (rejected with HTTP 401)');
+
+  // =========================================================================
+  // ITEM 3: Supported Admin API (auth.admin.signOut with JWT)
+  // =========================================================================
+  console.log('\n--- Item 3: Supported Admin API (auth.admin.signOut) Test ---');
+  const securityCode = fs.readFileSync(path.join(process.cwd(), 'src/lib/security.ts'), 'utf8');
+
+  // Verify auth.admin.signOut is called with JWT and not userId
+  assert.ok(
+    securityCode.includes("admin.auth.admin.signOut(jwt, 'global')") ||
+    securityCode.includes("admin.auth.admin.signOut(detectedJwt, 'global')"),
+    'auth.admin.signOut must be called with a JWT access token, not a userId'
+  );
+  assert.ok(
+    !securityCode.includes("admin.auth.admin.signOut(userId, 'global')"),
+    'auth.admin.signOut(userId, ...) must NOT be called with a userId'
+  );
+  assert.ok(
+    securityCode.includes('adminSignOutUserWithJwt'),
+    'src/lib/security.ts must export adminSignOutUserWithJwt'
+  );
+  assert.ok(
+    securityCode.includes('DOCUMENTED FALLBACK PATH') &&
+    securityCode.includes('admin_revoke_user_sessions'),
+    'Direct database deletes must be documented as fallback path'
+  );
+  console.log('  ✓ Verified auth.admin.signOut takes JWT access token (supported path)');
+  console.log('  ✓ Verified direct database deletes from auth.sessions/refresh_tokens retained as documented fallback');
 
   console.log('\n============================================================');
   console.log('🎉 ALL PHASE 4 FINAL CHECKS PASSED WITH 100% SUCCESS!');

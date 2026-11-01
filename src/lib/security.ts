@@ -186,19 +186,62 @@ export async function createActiveSession(
 }
 
 /**
+ * Supported Supabase Admin API for global sign-out using a user's access token (JWT).
+ * Takes a valid JWT access token and invalidates all active sessions for that user in Supabase Auth.
+ */
+export async function adminSignOutUserWithJwt(jwt: string): Promise<{ success: boolean; error?: string }> {
+  if (!jwt) {
+    return { success: false, error: 'A valid JWT access token is required for auth.admin.signOut' };
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    try {
+      const admin = createAdminClient();
+      const { error } = await admin.auth.admin.signOut(jwt, 'global');
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown signOut error' };
+    }
+  }
+
+  // Local / test runtime fallback
+  const { revokedTokens } = getRevocationStore();
+  revokedTokens.add(jwt);
+  return { success: true };
+}
+
+/**
  * Revoke REAL Supabase Auth sessions, refresh tokens, and active_sessions table.
  * Used by "Sign Out Everywhere", "Deactivate User", and "Force Password Reset".
+ * 
+ * Supports:
+ * 1. Primary supported path: auth.admin.signOut(jwt, 'global') when user's JWT access token is available.
+ * 2. Documented fallback path: Atomic database deletion from auth.sessions and auth.refresh_tokens
+ *    via public.admin_revoke_user_sessions(userId) when token is not present or for offline user revocation.
  */
-export async function revokeUserAuthSessions(userId: string): Promise<void> {
+export async function revokeUserAuthSessions(userId: string, userJwt?: string | null): Promise<void> {
   const revocationTimestamp = Date.now();
   const { userRevocations, userActiveTokens, revokedTokens } = getRevocationStore();
   userRevocations.set(userId, revocationTimestamp);
 
   // Invalidate any active tokens registered for this user
+  let detectedJwt = userJwt || null;
   if (userActiveTokens.has(userId)) {
     const tokens = userActiveTokens.get(userId)!;
     for (const t of tokens) {
       revokedTokens.add(t);
+      if (!detectedJwt && t.split('.').length === 3) {
+        detectedJwt = t;
+      }
     }
     userActiveTokens.delete(userId);
   }
@@ -215,6 +258,19 @@ export async function revokeUserAuthSessions(userId: string): Promise<void> {
 
   if (isConfigured) {
     const admin = createAdminClient();
+
+    // 1. PRIMARY SUPPORTED PATH: auth.admin.signOut(jwt, 'global')
+    // Uses the official Supabase Admin API when an access token is available
+    if (detectedJwt && detectedJwt.split('.').length === 3) {
+      try {
+        await admin.auth.admin.signOut(detectedJwt, 'global');
+      } catch (err) {
+        console.warn('Supported admin.auth.admin.signOut encountered an error, proceeding with documented fallback:', err);
+      }
+    }
+
+    // 2. DOCUMENTED FALLBACK PATH: Direct database deletion from auth.sessions & auth.refresh_tokens
+    // Essential when an administrator revokes a target user's session without possessing the user's current JWT
     try {
       await (admin as any).rpc('admin_revoke_user_sessions', { p_user_id: userId });
     } catch {
@@ -224,17 +280,14 @@ export async function revokeUserAuthSessions(userId: string): Promise<void> {
         // Table may be in protected schema
       }
     }
+
+    // 3. Update profile sessions_revoked_before timestamp in database
     try {
       await (admin.from('profiles') as any)
         .update({ sessions_revoked_before: new Date().toISOString() })
         .eq('id', userId);
     } catch {
       // Ignore if column not present yet
-    }
-    try {
-      await admin.auth.admin.signOut(userId, 'global');
-    } catch {
-      // Ignore if not present
     }
   }
 
