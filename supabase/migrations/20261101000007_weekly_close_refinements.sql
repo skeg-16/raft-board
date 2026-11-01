@@ -1,6 +1,6 @@
 -- Migration: 20261101000007_weekly_close_refinements.sql
 -- Description:
--- 1. Sets pg_cron schedule to run every 15 minutes (*/15 * * * *).
+-- 1. Sets pg_cron schedule to run every minute (* * * * *), not tied to any weekday in UTC.
 -- 2. Fast-exit in close_week() unless Saturday cutoff has passed AND current week is still open.
 -- 3. Dynamic trigger on public.settings so updating meeting_time immediately adjusts the next cutoff with zero cron changes.
 
@@ -396,14 +396,14 @@ begin
 end;
 $$ language plpgsql security definer;
 
--- 4. Set pg_cron schedule to run every 15 minutes (*/15 * * * *)
+-- 4. Set pg_cron schedule to run every minute (* * * * *)
 do $$
 begin
   if exists (select 1 from pg_extension where extname = 'pg_cron') then
     perform cron.unschedule('raft-weekly-close');
     perform cron.schedule(
       'raft-weekly-close',
-      '*/15 * * * *',
+      '* * * * *',
       'select public.close_week();'
     );
   end if;

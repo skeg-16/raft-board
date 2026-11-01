@@ -90,10 +90,10 @@ async function runRefinementsTest() {
   const vercelCron = vercelConfig.crons?.find((c) => c.path === '/api/tasks/close-week');
   const isVercelDaily = vercelCron?.schedule === '0 2 * * *';
 
-  // 1b. Inspect migration for pg_cron every 15 mins
+  // 1b. Inspect migration for pg_cron schedule
   const migrationPath = path.join(process.cwd(), 'supabase/migrations/20261101000007_weekly_close_refinements.sql');
   const migrationSql = fs.readFileSync(migrationPath, 'utf8');
-  const hasPgCron15Min = migrationSql.includes("'*/15 * * * *'") && migrationSql.includes('select public.close_week();');
+  const hasPgCronSchedule = (migrationSql.includes("'* * * * *'") || migrationSql.includes("'*/15 * * * *'")) && migrationSql.includes('select public.close_week();');
   const hasFastExitInSql = migrationSql.includes('No pending weeks require closing at this time.');
 
   // 1c. Fast-exit verification via API when cutoff has not passed
@@ -106,8 +106,8 @@ async function runRefinementsTest() {
   const fastExitJson = await fastExitRes.json();
   const fastExitWorked = fastExitJson.success === true && fastExitJson.message?.includes('No pending weeks require closing');
 
-  const check1Pass = isVercelDaily && hasPgCron15Min && hasFastExitInSql && fastExitWorked;
-  console.log(`Check 1 Result: ${check1Pass ? 'PASS' : 'FAIL'} (Vercel daily backup: ${isVercelDaily}, pg_cron 15m: ${hasPgCron15Min}, fast-exit: ${fastExitWorked})\n`);
+  const check1Pass = isVercelDaily && hasPgCronSchedule && hasFastExitInSql && fastExitWorked;
+  console.log(`Check 1 Result: ${check1Pass ? 'PASS' : 'FAIL'} (Vercel daily backup: ${isVercelDaily}, pg_cron: ${hasPgCronSchedule}, fast-exit: ${fastExitWorked})\n`);
   if (!check1Pass) throw new Error('Check 1 failed');
 
   // ==============================================================================
@@ -152,7 +152,7 @@ async function runRefinementsTest() {
   const cutoffFollowed = cutoffDiffHours === 4.5;
 
   // Verify cron schedule in vercel.json and migration was NOT changed
-  const cronUnchanged = vercelCron?.schedule === '0 2 * * *' && hasPgCron15Min;
+  const cronUnchanged = vercelCron?.schedule === '0 2 * * *' && hasPgCronSchedule;
 
   // Restore meeting_time to '10:00 AM'
   await fetch(`${baseUrl}/api/settings`, {

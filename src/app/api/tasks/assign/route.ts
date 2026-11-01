@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getCurrentProfile, getRuntimeUserStore } from '@/lib/auth';
-import { getCurrentWeek } from '@/lib/tasks';
+import { getCurrentWeek, closeWeek, getOrCreateNextWeek, getStores } from '@/lib/tasks';
 import { createAdminClient } from '@/lib/supabase/admin';
 import type { Task, TaskCategory, TaskSize } from '@/types/database';
 
@@ -29,12 +29,28 @@ export async function POST(request: Request) {
     );
   }
 
-  const currentWeek = await getCurrentWeek();
-  if (new Date() >= new Date(currentWeek.cutoff_at)) {
-    return NextResponse.json(
-      { error: 'Cannot assign task: the Saturday meeting cutoff for this week has passed.' },
-      { status: 400 }
-    );
+  let targetWeek = await getCurrentWeek();
+  const now = body.simulatedNow ? new Date(body.simulatedNow) : new Date();
+
+  // If assigning right at or after the cutoff (e.g. at Saturday meeting time or while old week is closing),
+  // assignments belong to the upcoming week! Either trigger close or assign to next week.
+  if (now >= new Date(targetWeek.cutoff_at)) {
+    const closeRes = await closeWeek(undefined, false, now);
+    if (closeRes.nextWeekOpened) {
+      const { weeks } = getStores();
+      const opened = weeks.get(closeRes.nextWeekOpened);
+      if (opened) {
+        targetWeek = opened;
+      } else {
+        targetWeek = await getCurrentWeek();
+      }
+    } else {
+      targetWeek = await getCurrentWeek();
+    }
+
+    if (now >= new Date(targetWeek.cutoff_at)) {
+      targetWeek = await getOrCreateNextWeek(targetWeek);
+    }
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -61,7 +77,7 @@ export async function POST(request: Request) {
 
     const { data, error } = await (admin.from('tasks') as any)
       .insert({
-        week_id: currentWeek.id,
+        week_id: targetWeek.id,
         user_id: userId,
         title: title.trim(),
         category: category as TaskCategory,
@@ -79,7 +95,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, task: data });
+    return NextResponse.json({ success: true, task: data, weekId: targetWeek.id });
   }
 
   // Local fallback: verify target member is active
@@ -94,7 +110,7 @@ export async function POST(request: Request) {
   const taskId = `task-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const newTask: Task = {
     id: taskId,
-    week_id: currentWeek.id,
+    week_id: targetWeek.id,
     user_id: userId,
     title: title.trim(),
     category: category as TaskCategory,
@@ -111,9 +127,8 @@ export async function POST(request: Request) {
     updated_at: new Date().toISOString(),
   };
 
-  if (__raft_tasks) {
-    __raft_tasks.set(taskId, newTask);
-  }
+  const { tasks } = getStores();
+  tasks.set(taskId, newTask);
 
-  return NextResponse.json({ success: true, task: newTask });
+  return NextResponse.json({ success: true, task: newTask, weekId: targetWeek.id });
 }

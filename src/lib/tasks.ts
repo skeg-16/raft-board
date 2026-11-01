@@ -104,7 +104,7 @@ declare global {
   var __raft_month_scores: Map<string, MonthScore> | undefined;
 }
 
-function getStores() {
+export function getStores() {
   if (!globalThis.__raft_weeks) globalThis.__raft_weeks = new Map();
   if (!globalThis.__raft_tasks) globalThis.__raft_tasks = new Map();
   if (!globalThis.__raft_quick_picks) {
@@ -177,7 +177,21 @@ export function parseMeetingTime(timeStr?: string): { hour: number; minute: numb
 }
 
 // Update system settings (Super Admins only)
-// Immediately updates current open week cutoff so it follows new meeting time with zero cron schedule change
+// Helper to parse weekday string to index (0=Sunday, 1=Monday, ..., 6=Saturday)
+export function parseWeekday(dayName?: string): number {
+  const map: Record<string, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+  return map[dayName?.trim().toLowerCase() || 'saturday'] ?? 6;
+}
+
+// Immediately updates current open week cutoff so it follows new meeting time & weekday with zero cron schedule change
 export async function updateSystemSettings(updates: Partial<Settings>): Promise<{ settings: Settings; currentWeek: Week }> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const isConfigured =
@@ -209,11 +223,32 @@ export async function updateSystemSettings(updates: Partial<Settings>): Promise<
     updatedSettings = inMemorySettings;
   }
 
-  // Update cutoff_at for currently open week
-  const { cutoffAt: newCutoff, startAt: newStart } = deriveWeekBoundaries(updatedSettings);
+  // Update cutoff_at for currently open week based on updated meeting_weekday and meeting_time
+  const tzOffsetHours = 8;
+  const utc = Date.now() + new Date().getTimezoneOffset() * 60000;
+  const localNow = new Date(utc + 3600000 * tzOffsetHours);
+  const targetDay = parseWeekday(updatedSettings.meeting_weekday);
+  const currentDay = localNow.getUTCDay();
+  const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(updatedSettings.meeting_time);
+
+  let targetYear = localNow.getUTCFullYear();
+  let targetMonth = localNow.getUTCMonth();
+  let targetDate = localNow.getUTCDate();
+
+  if (currentDay === targetDay) {
+    // Cutoff date is today at meeting time.
+    // If meeting time has already passed today, cutoff is set to today in the past (locks week immediately).
+  } else {
+    let daysUntil = (targetDay - currentDay + 7) % 7;
+    if (daysUntil === 0) daysUntil = 7;
+    targetDate += daysUntil;
+  }
+
+  const cutoffLocal = new Date(Date.UTC(targetYear, targetMonth, targetDate, meetingHour, meetingMinute, 0));
+  const newCutoff = new Date(cutoffLocal.getTime() - 3600000 * tzOffsetHours);
+
   const currentWeek = await getCurrentWeek();
   currentWeek.cutoff_at = newCutoff.toISOString();
-  currentWeek.start_at = newStart.toISOString();
 
   const { weeks } = getStores();
   weeks.set(currentWeek.id, currentWeek);
@@ -241,20 +276,23 @@ export function deriveWeekBoundaries(settings: Settings, refDate = new Date()): 
   let startMonth = localNow.getUTCMonth();
   let startDate = localNow.getUTCDate();
 
+  const targetDay = parseWeekday(settings.meeting_weekday);
   const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(settings.meeting_time);
 
-  let daysSinceSaturday = (dayOfWeek + 1) % 7;
+  let daysSinceMeetingDay = (dayOfWeek - targetDay + 7) % 7;
   const isPastMeetingTimeToday =
     currentHour > meetingHour || (currentHour === meetingHour && currentMinute >= meetingMinute);
 
-  if (dayOfWeek === 6 && isPastMeetingTimeToday) {
-    daysSinceSaturday = 0;
-  } else if (dayOfWeek === 6) {
-    daysSinceSaturday = 7;
+  if (dayOfWeek === targetDay) {
+    if (isPastMeetingTimeToday) {
+      daysSinceMeetingDay = 0;
+    } else {
+      daysSinceMeetingDay = 7;
+    }
   }
 
   const startLocal = new Date(
-    Date.UTC(startYear, startMonth, startDate - daysSinceSaturday, meetingHour, meetingMinute, 0)
+    Date.UTC(startYear, startMonth, startDate - daysSinceMeetingDay, meetingHour, meetingMinute, 0)
   );
   const cutoffLocal = new Date(startLocal.getTime() + 7 * 24 * 60 * 60 * 1000);
 
@@ -336,6 +374,31 @@ export async function getCurrentWeek(): Promise<Week> {
 
   weeks.set(newWeek.id, newWeek);
   return newWeek;
+}
+
+// Get or create next week for assignments made at/after the cutoff or during weekly close
+export async function getOrCreateNextWeek(currentWeek: Week): Promise<Week> {
+  const { weeks } = getStores();
+  const nextStart = new Date(currentWeek.cutoff_at);
+  const nextCutoff = new Date(nextStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const nextYear = nextCutoff.getUTCFullYear();
+  const nextWeekNum = currentWeek.week_number + 1;
+  const nextWeekId = `week-${nextYear}-${nextWeekNum}`;
+
+  const existing = weeks.get(nextWeekId);
+  if (existing) return existing;
+
+  const nextWeek: Week = {
+    id: nextWeekId,
+    week_number: nextWeekNum,
+    year: nextYear,
+    start_at: nextStart.toISOString(),
+    cutoff_at: nextCutoff.toISOString(),
+    is_current: true,
+    created_at: new Date().toISOString(),
+  };
+  weeks.set(nextWeekId, nextWeek);
+  return nextWeek;
 }
 
 // Calculate streaks: count consecutive weeks with a finished task or rest mode

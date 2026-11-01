@@ -87,6 +87,63 @@ export default function MyWeekPage() {
   const [assignSize, setAssignSize] = useState<TaskSize>('medium');
   const [assignNote, setAssignNote] = useState('');
 
+  // Countdown to Saturday cutoff
+  const [countdown, setCountdown] = useState<{
+    days: number;
+    hours: number;
+    minutes: number;
+    seconds: number;
+    totalMs: number;
+    isUrgent: boolean; // <= 30 minutes
+    formatted: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!currentWeek?.cutoff_at) return;
+
+    const updateCountdown = () => {
+      const now = Date.now();
+      const cutoffTime = new Date(currentWeek.cutoff_at).getTime();
+      const diff = cutoffTime - now;
+
+      if (diff <= 0) {
+        setIsCutoffPassed(true);
+        setCountdown(null);
+        return;
+      }
+
+      const totalSeconds = Math.floor(diff / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const isUrgent = diff <= 30 * 60 * 1000; // turns amber 30 minutes before
+
+      let formatted = '';
+      if (days > 0) {
+        formatted = `${days}d ${hours}h ${minutes}m`;
+      } else if (hours > 0) {
+        formatted = `${hours}h ${minutes}m ${seconds}s`;
+      } else {
+        formatted = `${minutes}m ${seconds}s`;
+      }
+
+      setCountdown({
+        days,
+        hours,
+        minutes,
+        seconds,
+        totalMs: diff,
+        isUrgent,
+        formatted,
+      });
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [currentWeek?.cutoff_at]);
+
   const loadData = async () => {
     try {
       setLoading(true);
@@ -375,15 +432,31 @@ export default function MyWeekPage() {
       <div className="rounded-3xl bg-gradient-to-br from-slate-900 via-sky-950 to-slate-900 text-white p-4 shadow-lg border border-sky-900/40 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-400/30 text-[10px] font-extrabold uppercase tracking-wider">
                 Week {currentWeek?.week_number || 44}
               </span>
-              {isCutoffPassed && (
+              {isCutoffPassed ? (
                 <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-400/30 text-[10px] font-extrabold uppercase">
                   Week Locked
                 </span>
-              )}
+              ) : countdown ? (
+                <span
+                  data-testid="cutoff-badge"
+                  className={`px-2.5 py-0.5 rounded-full border text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 transition-colors ${
+                    countdown.isUrgent
+                      ? 'bg-amber-500/25 text-amber-300 border-amber-400/60 shadow-xs shadow-amber-500/20 animate-pulse'
+                      : 'bg-sky-500/20 text-sky-300 border-sky-400/30'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      countdown.isUrgent ? 'bg-amber-400 animate-ping' : 'bg-sky-400'
+                    }`}
+                  />
+                  {countdown.formatted} left
+                </span>
+              ) : null}
             </div>
             <h1 className="text-xl font-extrabold font-display text-white mt-1">
               My Week
@@ -407,6 +480,53 @@ export default function MyWeekPage() {
             {isResting ? 'Resting 🌴' : 'Rest Mode'}
           </button>
         </div>
+
+        {/* Live Cutoff Countdown Banner (Before Cutoff) */}
+        {!isCutoffPassed && countdown && (
+          <div
+            data-testid="cutoff-countdown-banner"
+            className={`p-3 rounded-2xl border flex items-center justify-between gap-3 text-xs transition-all duration-300 ${
+              countdown.isUrgent
+                ? 'bg-amber-500/15 border-amber-400/50 text-amber-200 shadow-md shadow-amber-950/20'
+                : 'bg-slate-950/60 border-sky-900/60 text-sky-200'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`p-1.5 rounded-xl border shrink-0 ${
+                  countdown.isUrgent
+                    ? 'bg-amber-500/25 border-amber-400/40 text-amber-300'
+                    : 'bg-sky-900/40 border-sky-700/40 text-sky-300'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] text-sky-200/70 font-medium">
+                  {countdown.isUrgent ? '⚠️ Cutoff imminent — finish tasks now!' : 'Saturday Cutoff Countdown'}
+                </p>
+                <p className="font-extrabold font-mono text-sm tracking-tight text-white flex items-center gap-1.5">
+                  <span className={countdown.isUrgent ? 'text-amber-300 font-bold' : 'text-white'}>
+                    {countdown.formatted}
+                  </span>
+                  <span className="text-[11px] font-sans font-normal text-slate-300">remaining</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="text-right shrink-0">
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                  countdown.isUrgent
+                    ? 'bg-amber-400/30 text-amber-200 border-amber-300/50'
+                    : 'bg-sky-800/40 text-sky-300 border-sky-700/40'
+                }`}
+              >
+                {countdown.isUrgent ? 'Closing Soon' : 'On Track'}
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Weekly Task XP Progress & Bonus */}
         <div className="pt-2 border-t border-sky-800/40 space-y-2">
