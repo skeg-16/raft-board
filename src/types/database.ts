@@ -4,6 +4,7 @@ export type MemberStatus = 'pending' | 'active' | 'deactivated';
 export interface Profile {
   id: string;
   full_name: string;
+  email?: string;
   role_title: string | null;
   role_type: RoleType | null;
   requested_role_title: string | null;
@@ -16,8 +17,34 @@ export interface Profile {
   avatar: string | null;
   active: boolean;
   must_change_password: boolean;
+  mfa_enabled?: boolean;
+  mfa_enrolled_at?: string | null;
+  last_login_at?: string | null;
+  last_device_browser?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LoginLog {
+  id: string;
+  user_id: string | null;
+  email: string;
+  status: 'success' | 'failed';
+  ip_hash: string;
+  user_agent?: string | null;
+  device_browser?: string | null;
+  failure_reason?: string | null;
+  created_at: string;
+}
+
+export interface ActiveSession {
+  id: string;
+  user_id: string;
+  session_id: string;
+  device_browser: string;
+  ip_hash: string;
+  last_active_at: string;
+  created_at: string;
 }
 
 export interface Settings {

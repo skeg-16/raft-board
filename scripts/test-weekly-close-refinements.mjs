@@ -146,7 +146,8 @@ async function runRefinementsTest() {
   });
   const updatedData = await updateSettingsRes.json();
   const currentWeekPreserved = updatedData.currentWeek.cutoff_at === initialCutoff;
-  const settingsUpdated = updatedData.settings.meeting_time === '02:30 PM';
+  const settingsUpdated =
+    updatedData.settings.meeting_time === '14:30:00' || updatedData.settings.meeting_time === '02:30 PM';
 
   // 3b. Use separate action to explicitly modify current week cutoff
   const futureOverride = new Date(Date.now() + 24 * 3600000).toISOString();

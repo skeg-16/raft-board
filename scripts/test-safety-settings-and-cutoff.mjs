@@ -94,7 +94,9 @@ async function runSafetyTestSuite() {
   // Verify that the current open week's cutoff was NOT altered or closed!
   const currentCutoffUntouched = currentWeekAfterSettings.cutoff_at === initialCutoff;
   const currentWeekStillOpen = currentWeekAfterSettings.is_current === true && currentWeekAfterSettings.id === initialWeekId;
-  const settingsUpdatedForNextWeek = patchData.settings.meeting_weekday === 'Wednesday' && patchData.settings.meeting_time === '03:00 PM';
+  const settingsUpdatedForNextWeek =
+    patchData.settings.meeting_weekday === 'Wednesday' &&
+    (patchData.settings.meeting_time === '15:00:00' || patchData.settings.meeting_time === '03:00 PM');
 
   console.log(`1a. Settings updated: weekday=${patchData.settings.meeting_weekday}, time=${patchData.settings.meeting_time}`);
   console.log(`    Current open week cutoff untouched: ${currentCutoffUntouched} (${initialCutoff})`);

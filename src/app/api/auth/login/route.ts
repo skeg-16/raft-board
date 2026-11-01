@@ -4,11 +4,15 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { checkBootstrapAdmin, getRuntimeUserStore } from '@/lib/auth';
+import { recordLoginLog, createActiveSession, parseUserAgent } from '@/lib/security';
 import type { Profile } from '@/types/database';
 
 export async function POST(request: Request) {
   try {
     const ip = getClientIp(request);
+    const userAgent = request.headers.get('user-agent') || '';
+    const deviceBrowser = parseUserAgent(userAgent);
+
     // Persistent Rate Limit Check
     const rateLimit = await checkRateLimit(ip, 'login');
 
@@ -49,6 +53,14 @@ export async function POST(request: Request) {
       });
 
       if (error || !data.user) {
+        await recordLoginLog({
+          email: normalizedEmail,
+          status: 'failed',
+          ip,
+          userAgent,
+          failureReason: error?.message || 'Invalid email or password.',
+        });
+
         if (error?.message?.toLowerCase().includes('email not confirmed')) {
           return NextResponse.json(
             { error: 'Email confirmation required. Please check your inbox and verify your email.' },
@@ -91,11 +103,40 @@ export async function POST(request: Request) {
 
       // Block rejected or deactivated accounts
       if (status === 'deactivated' || profile?.active === false) {
+        await recordLoginLog({
+          userId: data.user.id,
+          email: normalizedEmail,
+          status: 'failed',
+          ip,
+          userAgent,
+          failureReason: 'Account deactivated',
+        });
         return NextResponse.json(
           { error: 'Your account has been rejected or deactivated by an administrator.' },
           { status: 403 }
         );
       }
+
+      // Record successful login & active session
+      await recordLoginLog({
+        userId: data.user.id,
+        email: normalizedEmail,
+        status: 'success',
+        ip,
+        userAgent,
+      });
+      await createActiveSession(data.user.id, ip, userAgent);
+
+      const adminClient = createAdminClient();
+      await (adminClient.from('profiles') as any)
+        .update({
+          last_login_at: new Date().toISOString(),
+          last_device_browser: deviceBrowser,
+        })
+        .eq('id', data.user.id);
+
+      const requireMfaEnroll = Boolean(profile?.is_super_admin && !profile?.mfa_enabled);
+      const requireMfaVerify = Boolean(profile?.mfa_enabled);
 
       return NextResponse.json({
         success: true,
@@ -105,6 +146,8 @@ export async function POST(request: Request) {
         },
         profile,
         status,
+        requireMfaEnroll,
+        requireMfaVerify,
       });
     }
 
@@ -120,6 +163,14 @@ export async function POST(request: Request) {
     }
 
     if (!foundProfile || foundProfile.passwordHash !== password) {
+      await recordLoginLog({
+        userId: foundProfile?.id || null,
+        email: normalizedEmail,
+        status: 'failed',
+        ip,
+        userAgent,
+        failureReason: 'Invalid email or password',
+      });
       return NextResponse.json(
         { error: 'Invalid email or password.' },
         { status: 401 }
@@ -128,6 +179,14 @@ export async function POST(request: Request) {
 
     // RULE 1: Email confirmation required
     if (foundProfile.email_confirmed === false) {
+      await recordLoginLog({
+        userId: foundProfile.id,
+        email: normalizedEmail,
+        status: 'failed',
+        ip,
+        userAgent,
+        failureReason: 'Email not confirmed',
+      });
       return NextResponse.json(
         { error: 'Email confirmation required. Please verify your email before logging in.' },
         { status: 403 }
@@ -147,11 +206,36 @@ export async function POST(request: Request) {
 
     // Block rejected or deactivated accounts
     if (foundProfile.status === 'deactivated') {
+      await recordLoginLog({
+        userId: foundProfile.id,
+        email: normalizedEmail,
+        status: 'failed',
+        ip,
+        userAgent,
+        failureReason: 'Account deactivated',
+      });
       return NextResponse.json(
         { error: 'Your account has been rejected or deactivated by an administrator.' },
         { status: 403 }
       );
     }
+
+    // Successful login tracking
+    await recordLoginLog({
+      userId: foundProfile.id,
+      email: normalizedEmail,
+      status: 'success',
+      ip,
+      userAgent,
+    });
+    await createActiveSession(foundProfile.id, ip, userAgent);
+
+    foundProfile.last_login_at = new Date().toISOString();
+    foundProfile.last_device_browser = deviceBrowser;
+    store.set(foundProfile.id, foundProfile);
+
+    const requireMfaEnroll = Boolean(foundProfile.is_super_admin && !foundProfile.mfa_enabled);
+    const requireMfaVerify = Boolean(foundProfile.mfa_enabled);
 
     const res = NextResponse.json({
       success: true,
@@ -161,6 +245,8 @@ export async function POST(request: Request) {
       },
       profile: foundProfile,
       status: foundProfile.status,
+      requireMfaEnroll,
+      requireMfaVerify,
     });
 
     res.cookies.set(

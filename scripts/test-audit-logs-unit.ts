@@ -3,7 +3,8 @@ import {
   getStores,
   isValidWeekday,
   isValidMeetingTime,
-  calculateNextCutoff,
+  normalizeTimeToPostgres,
+  deriveWeekBoundaries,
   logAdminAction,
 } from '../src/lib/tasks';
 
@@ -55,20 +56,18 @@ async function runUnitTests() {
 
   assert.strictEqual(isValidMeetingTime('10:00 AM'), true);
   assert.strictEqual(isValidMeetingTime('14:30'), true);
+  assert.strictEqual(isValidMeetingTime('10:00:00'), true);
   assert.strictEqual(isValidMeetingTime('2:30 PM'), true);
   assert.strictEqual(isValidMeetingTime('25:00'), false);
   assert.strictEqual(isValidMeetingTime('12:60'), false);
   assert.strictEqual(isValidMeetingTime('random'), false);
   console.log('  ✓ isValidMeetingTime correctly validates time strings');
 
-  // Test 3: Next Cutoff Calculation
-  const sat10am = new Date('2026-11-07T02:00:00.000Z'); // Saturday Nov 7 10:00 AM Manila
-  const sunNext = calculateNextCutoff(sat10am, 'Sunday', '11:00 AM', 'Asia/Manila');
-  assert.strictEqual(sunNext.toISOString(), '2026-11-08T03:00:00.000Z');
-
-  const thuNext = calculateNextCutoff(sat10am, 'Thursday', '3:00 PM', 'Asia/Manila');
-  assert.strictEqual(thuNext.toISOString(), '2026-11-12T07:00:00.000Z');
-  console.log('  ✓ calculateNextCutoff correctly computes future cutoffs');
+  // Test 3: Postgres Time Normalization
+  assert.strictEqual(normalizeTimeToPostgres('10:00 AM'), '10:00:00');
+  assert.strictEqual(normalizeTimeToPostgres('2:30 PM'), '14:30:00');
+  assert.strictEqual(normalizeTimeToPostgres('14:30'), '14:30:00');
+  console.log('  ✓ normalizeTimeToPostgres standardizes meeting_time to HH:MM:SS');
 
   console.log('🎉 ALL UNIT CHECKS PASSED!\n');
 }

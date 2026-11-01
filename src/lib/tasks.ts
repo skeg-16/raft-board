@@ -127,6 +127,10 @@ declare global {
   var __raft_month_scores: Map<string, MonthScore> | undefined;
   // eslint-disable-next-line no-var
   var __raft_audit_logs: AppendOnlyAuditLogMap | undefined;
+  // eslint-disable-next-line no-var
+  var __raft_login_logs: Map<string, any> | undefined;
+  // eslint-disable-next-line no-var
+  var __raft_active_sessions: Map<string, any> | undefined;
 }
 
 export function getStores() {
@@ -148,6 +152,8 @@ export function getStores() {
   if (!globalThis.__raft_week_scores) globalThis.__raft_week_scores = new Map();
   if (!globalThis.__raft_month_scores) globalThis.__raft_month_scores = new Map();
   if (!globalThis.__raft_audit_logs) globalThis.__raft_audit_logs = new AppendOnlyAuditLogMap();
+  if (!globalThis.__raft_login_logs) globalThis.__raft_login_logs = new Map();
+  if (!globalThis.__raft_active_sessions) globalThis.__raft_active_sessions = new Map();
 
   return {
     weeks: globalThis.__raft_weeks,
@@ -158,13 +164,15 @@ export function getStores() {
     weekScores: globalThis.__raft_week_scores,
     monthScores: globalThis.__raft_month_scores,
     auditLogs: globalThis.__raft_audit_logs,
+    loginLogs: globalThis.__raft_login_logs,
+    activeSessions: globalThis.__raft_active_sessions,
   };
 }
 
 let inMemorySettings: Settings = {
   id: 1,
   meeting_weekday: 'Saturday',
-  meeting_time: '10:00 AM',
+  meeting_time: '10:00:00',
   timezone: 'Asia/Manila',
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
@@ -229,41 +237,19 @@ export function isValidMeetingTime(timeStr?: string): boolean {
   if (!timeStr) return false;
   const trimmed = timeStr.trim();
   const ampmRegex = /^(0?[1-9]|1[0-2]):[0-5][0-9]\s*(AM|PM)$/i;
-  const militaryRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  const militaryRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
   return ampmRegex.test(trimmed) || militaryRegex.test(trimmed);
 }
 
-// Calculate the next cutoff date based on meeting weekday & time in the specified timezone
-export function calculateNextCutoff(
-  startAt: Date | string,
-  weekday: string,
-  timeStr: string,
-  timezone = 'Asia/Manila'
-): Date {
-  const tzOffsetHours = timezone === 'Asia/Manila' ? 8 : 8;
-  const startDate = typeof startAt === 'string' ? new Date(startAt) : startAt;
-  const utc = startDate.getTime() + startDate.getTimezoneOffset() * 60000;
-  const localStart = new Date(utc + 3600000 * tzOffsetHours);
-
-  const startDay = localStart.getUTCDay(); // 0 is Sun, 6 is Sat
-  const targetDay = parseWeekday(weekday);
-  const { hour: meetingHour, minute: meetingMinute } = parseMeetingTime(timeStr);
-
-  let daysUntil = (targetDay - startDay + 7) % 7;
-  if (daysUntil === 0) {
-    daysUntil = 7;
-  }
-
-  const cutoffYear = localStart.getUTCFullYear();
-  const cutoffMonth = localStart.getUTCMonth();
-  const cutoffDate = localStart.getUTCDate() + daysUntil;
-
-  const cutoffLocal = new Date(Date.UTC(cutoffYear, cutoffMonth, cutoffDate, meetingHour, meetingMinute, 0));
-  const cutoffAt = new Date(cutoffLocal.getTime() - 3600000 * tzOffsetHours);
-  return cutoffAt;
+// Convert any meeting time string (12hr AM/PM or 24hr) into a single canonical Postgres time format (HH:MM:SS)
+export function normalizeTimeToPostgres(timeStr: string): string {
+  const { hour, minute } = parseMeetingTime(timeStr);
+  const h = String(hour).padStart(2, '0');
+  const m = String(minute).padStart(2, '0');
+  return `${h}:${m}:00`;
 }
 
-// Unified append-only audit logger for all admin and super-admin actions
+// Unified append-only audit logger for all admin and super-admin actions (Fail-Closed)
 export async function logAdminAction(
   userId: string,
   action: string,
@@ -286,7 +272,9 @@ export async function logAdminAction(
       })
       .select('*')
       .single();
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(`Audit logging failed: ${error.message}. Transaction aborted (fail-closed).`);
+    }
     return data as AuditLog;
   }
 
@@ -306,6 +294,7 @@ export async function logAdminAction(
 // Updates system settings (meeting day/time/tz).
 // RULE: Changes apply starting from the NEXT week by default.
 // The current open week's cutoff is NEVER altered, locked, or closed prematurely by settings updates.
+// FAIL-CLOSED: The audit log must succeed for settings changes to take effect.
 export async function updateSystemSettings(
   updates: Partial<Settings>,
   adminUserId?: string
@@ -313,8 +302,11 @@ export async function updateSystemSettings(
   if (updates.meeting_weekday && !isValidWeekday(updates.meeting_weekday)) {
     throw new Error('Invalid meeting weekday. Must be Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, or Saturday.');
   }
-  if (updates.meeting_time && !isValidMeetingTime(updates.meeting_time)) {
-    throw new Error('Invalid meeting time format. Must be e.g. 10:00 AM or 14:30.');
+  if (updates.meeting_time) {
+    if (!isValidMeetingTime(updates.meeting_time)) {
+      throw new Error('Invalid meeting time format. Must be a valid time e.g. 10:00:00, 10:00 AM or 14:30.');
+    }
+    updates.meeting_time = normalizeTimeToPostgres(updates.meeting_time);
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -327,28 +319,47 @@ export async function updateSystemSettings(
 
   if (isConfigured) {
     const admin = createAdminClient();
-    const { data, error } = await (admin.from('settings') as any)
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', 1)
-      .select('*')
-      .single();
-
-    if (error) throw new Error(error.message);
-    updatedSettings = data as unknown as Settings;
+    if (adminUserId) {
+      // Live Supabase atomic fail-closed function
+      const { data, error } = await (admin as any).rpc('admin_update_settings', {
+        p_admin_id: adminUserId,
+        p_weekday: updates.meeting_weekday || null,
+        p_time: updates.meeting_time || null,
+        p_tz: updates.timezone || null,
+      });
+      if (error) throw new Error(error.message);
+      const { data: setRow } = await (admin.from('settings') as any).select('*').eq('id', 1).single();
+      updatedSettings = setRow as Settings;
+    } else {
+      const { data, error } = await (admin.from('settings') as any)
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', 1)
+        .select('*')
+        .single();
+      if (error) throw new Error(error.message);
+      updatedSettings = data as unknown as Settings;
+    }
   } else {
+    const previousSettings = { ...inMemorySettings };
     inMemorySettings = {
       ...inMemorySettings,
       ...updates,
       updated_at: new Date().toISOString(),
     };
     updatedSettings = inMemorySettings;
-  }
 
-  if (adminUserId) {
-    await logAdminAction(adminUserId, 'update_settings', { updates });
+    // Fail-closed enforcement: if audit logging fails, rollback settings mutation
+    if (adminUserId) {
+      try {
+        await logAdminAction(adminUserId, 'update_settings', { updates });
+      } catch (err) {
+        inMemorySettings = previousSettings;
+        throw err;
+      }
+    }
   }
 
   // Preserve the current open week's cutoff completely intact.
@@ -416,12 +427,20 @@ export async function updateCurrentWeekCutoff(
   currentWeek.cutoff_at = targetDate.toISOString();
   weeks.set(currentWeek.id, currentWeek);
 
-  const auditEntry = await logAdminAction(userId, 'change_current_week_cutoff', {
-    week_id: currentWeek.id,
-    old_cutoff: oldCutoff,
-    new_cutoff: targetDate.toISOString(),
-    reason: reason || 'Manual super admin adjustment',
-  });
+  let auditEntry: AuditLog;
+  try {
+    auditEntry = await logAdminAction(userId, 'change_current_week_cutoff', {
+      week_id: currentWeek.id,
+      old_cutoff: oldCutoff,
+      new_cutoff: targetDate.toISOString(),
+      reason: reason || 'Manual super admin adjustment',
+    });
+  } catch (err) {
+    // Fail-closed rollback
+    currentWeek.cutoff_at = oldCutoff;
+    weeks.set(currentWeek.id, currentWeek);
+    throw err;
+  }
 
   return {
     success: true,
@@ -462,8 +481,7 @@ export function deriveWeekBoundaries(settings: Settings, refDate = new Date()): 
 } {
   // Asia/Manila offset is UTC+8
   const tzOffsetHours = settings.timezone === 'Asia/Manila' ? 8 : 8;
-  const utc = refDate.getTime() + refDate.getTimezoneOffset() * 60000;
-  const localNow = new Date(utc + 3600000 * tzOffsetHours);
+  const localNow = new Date(refDate.getTime() + 3600000 * tzOffsetHours);
 
   const dayOfWeek = localNow.getUTCDay(); // 0 is Sunday, 6 is Saturday
   const currentHour = localNow.getUTCHours();
@@ -572,14 +590,10 @@ export async function getOrCreateNextWeek(currentWeek: Week): Promise<Week> {
   const { weeks } = getStores();
   const settings = await getSettings();
   const nextStart = new Date(currentWeek.cutoff_at);
-  const nextCutoff = calculateNextCutoff(
-    nextStart,
-    settings.meeting_weekday,
-    settings.meeting_time,
-    settings.timezone
+  const { cutoffAt: nextCutoff, weekNumber: nextWeekNum, year: nextYear } = deriveWeekBoundaries(
+    settings,
+    new Date(nextStart.getTime() + 60000)
   );
-  const nextYear = nextCutoff.getUTCFullYear();
-  const nextWeekNum = currentWeek.week_number + 1;
   const nextWeekId = `week-${nextYear}-${nextWeekNum}`;
 
   const existing = weeks.get(nextWeekId);
@@ -1749,7 +1763,7 @@ export async function getMonthlySeasonLeaderboard(
   };
 }
 
-// 4. Close Week (Idempotent: safe to run twice, locks week, opens next week, snapshots scores, rolls over tasks, updates streaks)
+// 4. Close Week: Delegates directly to SQL canonical function public.close_week()
 // Database-level locking (Postgres advisory lock / row-level lock) guarantees concurrency safety across serverless instances without in-memory locks.
 export async function closeWeek(
   weekId?: string,
@@ -1766,10 +1780,26 @@ export async function closeWeek(
   topOtterUserId?: string;
   message: string;
 }> {
-  return await executeCloseWeek(weekId, triggeredBySuperAdmin, simulatedNow);
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const isConfigured =
+    supabaseUrl &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !supabaseUrl.includes('your-project-ref');
+
+  if (isConfigured) {
+    const admin = createAdminClient();
+    const { data, error } = await (admin as any).rpc('close_week', {
+      p_week_id: weekId || null,
+    });
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  // Local mock store runner for test sandbox (simulates SQL public.close_week)
+  return await runSqlCloseWeekSimulation(weekId, triggeredBySuperAdmin, simulatedNow);
 }
 
-async function executeCloseWeek(
+async function runSqlCloseWeekSimulation(
   weekId?: string,
   triggeredBySuperAdmin = false,
   simulatedNow?: string | Date
@@ -1966,14 +1996,10 @@ async function executeCloseWeek(
   // 3. Open next week
   const settings = await getSettings();
   const nextStart = new Date(targetWeek.cutoff_at);
-  const nextCutoff = calculateNextCutoff(
-    nextStart,
-    settings.meeting_weekday,
-    settings.meeting_time,
-    settings.timezone
+  const { cutoffAt: nextCutoff, weekNumber: nextWeekNum, year: nextYear } = deriveWeekBoundaries(
+    settings,
+    new Date(nextStart.getTime() + 60000)
   );
-  const nextYear = nextCutoff.getUTCFullYear();
-  const nextWeekNum = targetWeek.week_number + 1;
   const nextWeekId = `week-${nextYear}-${nextWeekNum}`;
 
   const nextWeek: Week = {

@@ -93,7 +93,11 @@ async function runTests() {
   assert.strictEqual(validSettingsRes.status, 200, 'Valid settings should succeed with HTTP 200');
   const validSettingsData = await validSettingsRes.json();
   assert.strictEqual(validSettingsData.settings.meeting_weekday, 'Sunday');
-  assert.strictEqual(validSettingsData.settings.meeting_time, '11:00 AM');
+  assert.ok(
+    validSettingsData.settings.meeting_time === '11:00:00' ||
+    validSettingsData.settings.meeting_time === '11:00 AM',
+    'Meeting time must be saved in valid format'
+  );
   console.log('  ✓ Valid schedule (Sunday, 11:00 AM) accepted successfully');
 
   // =========================================================================
