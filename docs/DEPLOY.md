@@ -68,7 +68,7 @@ Configure all of the following variables in **Vercel Project Settings → Enviro
 | `CRON_SECRET` | **Secret (Server Only)** | Production, Preview | High-entropy secret token passed in `Authorization: Bearer <CRON_SECRET>` headers to protect `/api/tasks/close-week` daily fallback runs. | `openssl rand -hex 32` |
 | `IP_HASH_SECRET` | **Secret (Server Only)** | Production, Preview | Server-side secret used for HMAC-SHA256 anonymization of client IP addresses in login logs. Prevents rainbow table deanonymization. | `openssl rand -hex 32` |
 | `TEAM_JOIN_CODE` | **Secret (Server Only)** | Production, Preview, Development | **SERVER-ONLY SECRET**: The registration passcode required at `/signup`. Validated exclusively on the server and **never exposed in the client bundle**. | `OTTER-RAFT-2026` |
-| `BOOTSTRAP_ADMIN_EMAILS` | **Secret (Server Only)** | Production, Preview, Development | Comma-separated list of founding executive emails. Users signing up with these emails are automatically promoted to active Super Admins **only after email confirmation**. Users with "railey" in the email automatically receive `is_treasurer = true`. | `christian@otter.systems,railey@otter.systems` |
+| `BOOTSTRAP_ADMIN_EMAILS` | **Secret (Server Only)** | Production, Preview, Development | Comma-separated list of founding executive emails. Users signing up with these emails are automatically promoted to active Super Admins **only after email confirmation**. Users with "railey" in the email automatically receive `is_treasurer = true`. | `raileymiguelfrias@gmail.com,goyenashawn@gmail.com,christiansantiago0605@gmail.com` |
 | `NODE_ENV` | System (Server Only) | Production | Set automatically to `production` by Vercel. | `production` |
 
 ---

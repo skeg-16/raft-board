@@ -18,7 +18,7 @@ export function checkBootstrapAdmin(email: string): {
   isTreasurer: boolean;
 } {
   const normalized = email.trim().toLowerCase();
-  const rawList = process.env.BOOTSTRAP_ADMIN_EMAILS || 'christian@otter.systems,railey@otter.systems';
+  const rawList = process.env.BOOTSTRAP_ADMIN_EMAILS || 'raileymiguelfrias@gmail.com,goyenashawn@gmail.com,christiansantiago0605@gmail.com';
   const bootstrapList = rawList
     .split(',')
     .map((e) => e.trim().toLowerCase())
