@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { isTokenRevoked } from '@/lib/revocation';
+import { checkBootstrapAdmin } from '@/lib/auth';
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -206,7 +207,17 @@ export async function updateSession(request: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    const status = profile?.status ?? 'pending';
+    let status = profile?.status ?? 'pending';
+    let isSuperAdmin = Boolean(profile?.is_super_admin);
+
+    // Auto-promote confirmed bootstrap admins in middleware if profile is still marked pending
+    if (status === 'pending' && user.email) {
+      const { isBootstrap } = checkBootstrapAdmin(user.email);
+      if (isBootstrap && user.email_confirmed_at) {
+        status = 'active';
+        isSuperAdmin = true;
+      }
+    }
 
     if (status === 'pending') {
       if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
@@ -243,7 +254,7 @@ export async function updateSession(request: NextRequest) {
     if (
       pathname.startsWith('/admin') &&
       pathname !== '/admin/mfa/enroll' &&
-      profile?.is_super_admin
+      isSuperAdmin
     ) {
       const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
       const effectiveAal = request.headers.get('x-test-aal') || aalData?.currentLevel || 'aal1';

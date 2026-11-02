@@ -99,10 +99,17 @@ export async function POST(request: Request) {
           .eq('id', data.user.id);
 
         status = 'active';
+        if (profile) {
+          profile.status = 'active';
+          profile.active = true;
+          profile.is_super_admin = true;
+          profile.is_treasurer = isTreasurer;
+          profile.role_type = 'executive';
+        }
       }
 
       // Block rejected or deactivated accounts
-      if (status === 'deactivated' || profile?.active === false) {
+      if (status === 'deactivated' || (profile && !profile.active && status !== 'active')) {
         await recordLoginLog({
           userId: data.user.id,
           email: normalizedEmail,
