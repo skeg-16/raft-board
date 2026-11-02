@@ -10,13 +10,20 @@
 alter table public.settings drop constraint if exists check_meeting_time_valid;
 
 alter table public.settings
+  alter column meeting_time drop default;
+
+alter table public.settings
   alter column meeting_time type time without time zone
   using (
     case
-      when meeting_time ~* 'AM|PM' then (to_timestamp(meeting_time, 'HH12:MI AM'))::time
-      else meeting_time::time
+      when meeting_time is null then '10:00:00'::time
+      when meeting_time::text ~* 'AM|PM' then (to_timestamp(meeting_time::text, 'HH12:MI AM'))::time
+      else meeting_time::text::time
     end
   );
+
+alter table public.settings
+  alter column meeting_time set default '10:00:00'::time;
 
 alter table public.settings
   add constraint check_meeting_time_valid
