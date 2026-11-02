@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { isTokenRevoked } from '@/lib/revocation';
-import { checkBootstrapAdmin } from '@/lib/auth';
+import { checkBootstrapAdmin } from '@/lib/bootstrap-admins';
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
