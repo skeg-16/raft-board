@@ -168,6 +168,9 @@ end;
 $$;
 
 -- 5. UPDATE STORED PROCEDURES TO ENFORCE AAL2 FOR SUPER ADMINS
+drop function if exists public.admin_update_user(uuid, uuid, text, text, text, boolean, boolean);
+drop function if exists public.admin_update_user(uuid, uuid, text, text, boolean, boolean, text);
+drop function if exists public.admin_update_user;
 create or replace function public.admin_update_user(
   p_admin_id uuid,
   p_target_id uuid,
@@ -270,6 +273,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_sign_out_user(uuid, uuid);
+drop function if exists public.admin_sign_out_user;
 create or replace function public.admin_sign_out_user(
   p_admin_id uuid,
   p_target_id uuid
@@ -321,6 +326,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_force_password_reset(uuid, uuid);
+drop function if exists public.admin_force_password_reset;
 create or replace function public.admin_force_password_reset(
   p_admin_id uuid,
   p_target_id uuid
@@ -371,6 +378,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_reset_user_2fa(uuid, uuid);
+drop function if exists public.admin_reset_user_2fa;
 create or replace function public.admin_reset_user_2fa(
   p_admin_id uuid,
   p_target_id uuid

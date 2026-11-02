@@ -3410,7 +3410,7 @@ create or replace function public.admin_approve_member(
   p_is_super_admin boolean,
   p_is_treasurer boolean
 )
-returns json as $$
+returns jsonb as 
 declare
   v_old_profile public.profiles%rowtype;
 begin
@@ -3444,7 +3444,7 @@ begin
     )
   );
 
-  return json_build_object('success', true, 'message', 'Member approved successfully.');
+  return jsonb_build_object('success', true, 'message', 'Member approved successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3453,7 +3453,7 @@ create or replace function public.admin_reject_member(
   p_admin_id uuid,
   p_member_id uuid
 )
-returns json as $$
+returns jsonb as 
 begin
   update public.profiles
   set status = 'deactivated',
@@ -3468,7 +3468,7 @@ begin
     jsonb_build_object('member_id', p_member_id)
   );
 
-  return json_build_object('success', true, 'message', 'Member registration rejected.');
+  return jsonb_build_object('success', true, 'message', 'Member registration rejected.');
 end;
 $$ language plpgsql security definer;
 
@@ -3482,7 +3482,7 @@ create or replace function public.admin_update_user(
   p_is_super_admin boolean,
   p_is_treasurer boolean
 )
-returns json as $$
+returns jsonb as 
 declare
   v_old public.profiles%rowtype;
 begin
@@ -3524,7 +3524,7 @@ begin
     )
   );
 
-  return json_build_object('success', true, 'message', 'User updated successfully.');
+  return jsonb_build_object('success', true, 'message', 'User updated successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3533,7 +3533,7 @@ create or replace function public.admin_deactivate_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns json as $$
+returns jsonb as 
 declare
   v_old_status text;
 begin
@@ -3559,7 +3559,7 @@ begin
     )
   );
 
-  return json_build_object('success', true, 'message', 'User deactivated successfully.');
+  return jsonb_build_object('success', true, 'message', 'User deactivated successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3568,7 +3568,7 @@ create or replace function public.admin_reactivate_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns json as $$
+returns jsonb as 
 declare
   v_old_status text;
 begin
@@ -3591,7 +3591,7 @@ begin
     )
   );
 
-  return json_build_object('success', true, 'message', 'User reactivated successfully.');
+  return jsonb_build_object('success', true, 'message', 'User reactivated successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3600,7 +3600,7 @@ create or replace function public.admin_sign_out_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns json as $$
+returns jsonb as 
 begin
   delete from public.active_sessions where user_id = p_target_user_id;
 
@@ -3611,7 +3611,7 @@ begin
     jsonb_build_object('target_user_id', p_target_user_id)
   );
 
-  return json_build_object('success', true, 'message', 'User signed out everywhere.');
+  return jsonb_build_object('success', true, 'message', 'User signed out everywhere.');
 end;
 $$ language plpgsql security definer;
 
@@ -3620,7 +3620,7 @@ create or replace function public.admin_reset_user_2fa(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns json as $$
+returns jsonb as 
 begin
   -- An admin cannot reset their own 2FA (must be performed by a second super admin)
   if p_admin_id = p_target_user_id then
@@ -3643,7 +3643,7 @@ begin
     )
   );
 
-  return json_build_object('success', true, 'message', 'User 2FA reset successfully.');
+  return jsonb_build_object('success', true, 'message', 'User 2FA reset successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3652,7 +3652,7 @@ create or replace function public.admin_force_password_reset(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns json as $$
+returns jsonb as 
 begin
   update public.profiles
   set must_change_password = true,
@@ -3666,7 +3666,7 @@ begin
     jsonb_build_object('target_user_id', p_target_user_id)
   );
 
-  return json_build_object('success', true, 'message', 'Password reset triggered successfully.');
+  return jsonb_build_object('success', true, 'message', 'Password reset triggered successfully.');
 end;
 $$ language plpgsql security definer;
 
@@ -3843,6 +3843,9 @@ end;
 $$;
 
 -- 5. UPDATE STORED PROCEDURES TO ENFORCE AAL2 FOR SUPER ADMINS
+drop function if exists public.admin_update_user(uuid, uuid, text, text, text, boolean, boolean);
+drop function if exists public.admin_update_user(uuid, uuid, text, text, boolean, boolean, text);
+drop function if exists public.admin_update_user;
 create or replace function public.admin_update_user(
   p_admin_id uuid,
   p_target_id uuid,
@@ -3945,6 +3948,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_sign_out_user(uuid, uuid);
+drop function if exists public.admin_sign_out_user;
 create or replace function public.admin_sign_out_user(
   p_admin_id uuid,
   p_target_id uuid
@@ -3996,6 +4001,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_force_password_reset(uuid, uuid);
+drop function if exists public.admin_force_password_reset;
 create or replace function public.admin_force_password_reset(
   p_admin_id uuid,
   p_target_id uuid
@@ -4046,6 +4053,8 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_reset_user_2fa(uuid, uuid);
+drop function if exists public.admin_reset_user_2fa;
 create or replace function public.admin_reset_user_2fa(
   p_admin_id uuid,
   p_target_id uuid
