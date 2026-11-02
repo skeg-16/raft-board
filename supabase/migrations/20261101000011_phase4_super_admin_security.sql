@@ -163,7 +163,7 @@ create or replace function public.admin_approve_member(
   p_is_super_admin boolean,
   p_is_treasurer boolean
 )
-returns jsonb as 
+returns jsonb as $$
 declare
   v_old_profile public.profiles%rowtype;
 begin
@@ -206,7 +206,7 @@ create or replace function public.admin_reject_member(
   p_admin_id uuid,
   p_member_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 begin
   update public.profiles
   set status = 'deactivated',
@@ -235,7 +235,7 @@ create or replace function public.admin_update_user(
   p_is_super_admin boolean,
   p_is_treasurer boolean
 )
-returns jsonb as 
+returns jsonb as $$
 declare
   v_old public.profiles%rowtype;
 begin
@@ -286,7 +286,7 @@ create or replace function public.admin_deactivate_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 declare
   v_old_status text;
 begin
@@ -321,7 +321,7 @@ create or replace function public.admin_reactivate_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 declare
   v_old_status text;
 begin
@@ -353,7 +353,7 @@ create or replace function public.admin_sign_out_user(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 begin
   delete from public.active_sessions where user_id = p_target_user_id;
 
@@ -373,7 +373,7 @@ create or replace function public.admin_reset_user_2fa(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 begin
   -- An admin cannot reset their own 2FA (must be performed by a second super admin)
   if p_admin_id = p_target_user_id then
@@ -405,7 +405,7 @@ create or replace function public.admin_force_password_reset(
   p_admin_id uuid,
   p_target_user_id uuid
 )
-returns jsonb as 
+returns jsonb as $$
 begin
   update public.profiles
   set must_change_password = true,
