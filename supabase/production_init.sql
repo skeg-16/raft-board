@@ -3847,10 +3847,10 @@ create or replace function public.admin_update_user(
   p_admin_id uuid,
   p_target_id uuid,
   p_role_title text default null,
-  p_role_type public.role_type default null,
+  p_role_type text default null,
   p_is_super_admin boolean default null,
   p_is_treasurer boolean default null,
-  p_status public.member_status default null
+  p_status text default null
 )
 returns jsonb
 language plpgsql
